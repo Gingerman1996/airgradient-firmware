@@ -31,6 +31,11 @@
 
 class Orchestrator {
 public:
+  struct Config {
+    bool require_initial_measurement = true;
+    bool force_offline_mode = false;
+  };
+
   /// References to all product services.  All referenced objects must outlive
   /// the Orchestrator instance.
   struct Services {
@@ -57,6 +62,20 @@ public:
   Orchestrator(RtosQueueHandle event_queue, const Services &services, GoSettings settings,
                ConfigStore &config_store, const char *serial);
 
+  /// Construct the orchestrator with boot-time options.
+  ///
+  /// @param event_queue  RTOS queue handle for the central event queue.
+  /// @param services     References to all product services.
+  /// @param settings     Product settings (owned copy — orchestrator may
+  ///                     update on SettingsChanged events).
+  /// @param config_store Config store for persisting setting changes.
+  /// @param serial       Device serial string (e.g., "AABBCCDDEEFF"),
+  ///                     used for BLE advertising name.  Must remain
+  ///                     valid for the lifetime of the Orchestrator.
+  /// @param config       Boot-time orchestration options.
+  Orchestrator(RtosQueueHandle event_queue, const Services &services, GoSettings settings,
+               ConfigStore &config_store, const char *serial, Config config);
+
   /// Set initial state from boot context and perform first-boot actions.
   /// Call once before run().
   ///
@@ -76,6 +95,7 @@ private:
   GoSettings _settings;
   ConfigStore &_config_store;
   const char *_serial; ///< Device serial string for BLE advertising
+  Config _config;
 
   // --- Application state ---
   OperatingMode _mode = OperatingMode::Portable;

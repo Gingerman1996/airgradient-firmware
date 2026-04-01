@@ -64,8 +64,14 @@ static MeasuresAGo make_invalid_measures() {
 
 Orchestrator::Orchestrator(RtosQueueHandle event_queue, const Services &services,
                            GoSettings settings, ConfigStore &config_store, const char *serial)
+    : Orchestrator(event_queue, services, std::move(settings), config_store, serial, Config{}) {}
+
+Orchestrator::Orchestrator(RtosQueueHandle event_queue, const Services &services,
+                           GoSettings settings, ConfigStore &config_store, const char *serial,
+                           Config config)
     : _event_queue(event_queue), _svc(services), _settings(std::move(settings)),
-      _config_store(config_store), _serial(serial), _cached_measures(make_invalid_measures()) {}
+      _config_store(config_store), _serial(serial), _config(config),
+      _cached_measures(make_invalid_measures()) {}
 
 // ---------------------------------------------------------------------------
 // Boot initialization
@@ -74,8 +80,12 @@ Orchestrator::Orchestrator(RtosQueueHandle event_queue, const Services &services
 void Orchestrator::init(WakeCause cause) {
   AG_LOGI(TAG, "init: wake_cause=%d", static_cast<int>(cause));
 
-  // Mode always comes from persisted settings (NVS) — single source of truth
-  _mode = _settings.operating_mode;
+  // Mode normally comes from persisted settings, with an optional boot-time
+  // override for headless power-test boots.
+  _mode = _config.force_offline_mode ? OperatingMode::Offline : _settings.operating_mode;
+  if (_config.force_offline_mode && _settings.operating_mode != OperatingMode::Offline) {
+    AG_LOGI(TAG, "init: headless power-test profile active, forcing Offline mode");
+  }
 
   if (cause == WakeCause::Button) {
     RtcAppState state = _svc.power_service.load_state();
@@ -93,9 +103,14 @@ void Orchestrator::init(WakeCause cause) {
 
   _svc.ui_manager.sync_settings(_settings);
 
-  // Initial measurement (single iteration, all sensors)
-  _svc.sensor_producer.request_measurement(1, SensorGroup::All);
-  _last_requested_group = SensorGroup::All;
+  if (_config.require_initial_measurement) {
+    // Initial measurement (single iteration, all sensors)
+    _svc.sensor_producer.request_measurement(1, SensorGroup::All);
+    _last_requested_group = SensorGroup::All;
+  } else {
+    AG_LOGI(TAG, "init: initial measurement skipped by boot config");
+    _first_measurement_done = true;
+  }
 
   // Initial BMS poll
   _latest_power = _svc.power_service.poll_bms();

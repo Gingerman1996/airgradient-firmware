@@ -292,7 +292,9 @@ struct TestFixture {
 
   ~TestFixture() { RTOS::set_instance(nullptr); }
 
-  Orchestrator make_orchestrator() { return {nullptr, services, settings, mock_config, "TEST00"}; }
+  Orchestrator make_orchestrator(Orchestrator::Config config = {}) {
+    return {nullptr, services, settings, mock_config, "TEST00", config};
+  }
 };
 
 // ============================================================================
@@ -380,6 +382,56 @@ TEST_CASE("init(PowerOn): default state with first measurement and BMS poll",
   REQUIRE(test_spy::last_iterations == 1);
 
   // Verify initial BMS poll
+  REQUIRE(test_spy::bms_polled);
+  REQUIRE(test_spy::watchdog_reset);
+}
+
+TEST_CASE("init(PowerOn): skips initial measurement when no sensors are available",
+          "[Orchestrator][init]") {
+  TestFixture f;
+  auto orch =
+      f.make_orchestrator({.require_initial_measurement = false});
+
+  ALLOW_CALL(f.mock_config, get_int(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::NOT_FOUND);
+  ALLOW_CALL(f.mock_config, get_bool(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::NOT_FOUND);
+  ALLOW_CALL(f.mock_config, get_string(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::NOT_FOUND);
+
+  orch.init(WakeCause::PowerOn);
+
+  REQUIRE(A::lock_state(orch) == LockState::Locked);
+  REQUIRE(A::first_measurement_done(orch));
+  REQUIRE_FALSE(test_spy::measurement_requested);
+  REQUIRE(test_spy::bms_polled);
+  REQUIRE(test_spy::watchdog_reset);
+}
+
+TEST_CASE("init(PowerOn): headless power-test profile forces Offline mode",
+          "[Orchestrator][init][power]") {
+  TestFixture f;
+  f.settings.operating_mode = OperatingMode::Portable;
+  auto orch = f.make_orchestrator({
+      .require_initial_measurement = false,
+      .force_offline_mode = true,
+  });
+
+  ALLOW_CALL(f.mock_config, get_int(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::NOT_FOUND);
+  ALLOW_CALL(f.mock_config, get_bool(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::NOT_FOUND);
+  ALLOW_CALL(f.mock_config, get_string(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::NOT_FOUND);
+
+  orch.init(WakeCause::PowerOn);
+
+  REQUIRE(A::mode(orch) == OperatingMode::Offline);
+  REQUIRE(A::settings(orch).operating_mode == OperatingMode::Portable);
+  REQUIRE(A::lock_state(orch) == LockState::Locked);
+  REQUIRE(A::first_measurement_done(orch));
+  REQUIRE_FALSE(test_spy::measurement_requested);
+  REQUIRE_FALSE(test_spy::ble_init_called);
   REQUIRE(test_spy::bms_polled);
   REQUIRE(test_spy::watchdog_reset);
 }

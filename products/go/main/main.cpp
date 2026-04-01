@@ -66,6 +66,22 @@
 static constexpr const char *TAG = "main";
 
 static constexpr const char *FIRMWARE_VERSION = "0.1.0";
+static constexpr int HEADLESS_POWER_TEST_SLEEP_INTERVAL_SECONDS = 300;
+
+static bool has_primary_air_sensors(const Sensors &sensors) {
+  return sensors.temp_hum != nullptr || sensors.co2 != nullptr || sensors.pms_a != nullptr ||
+         sensors.pms_b != nullptr || sensors.tvoc_nox != nullptr || sensors.o3_no2 != nullptr;
+}
+
+static bool has_any_measurement_sensors(const Sensors &sensors) {
+  return has_primary_air_sensors(sensors) || sensors.pressure != nullptr;
+}
+
+static void apply_headless_power_test_profile(GoSettings &settings) {
+  settings.pm_interval_seconds = HEADLESS_POWER_TEST_SLEEP_INTERVAL_SECONDS;
+  settings.other_sensor_interval_seconds = HEADLESS_POWER_TEST_SLEEP_INTERVAL_SECONDS;
+  settings.display_refresh_interval_seconds = HEADLESS_POWER_TEST_SLEEP_INTERVAL_SECONDS;
+}
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -180,6 +196,13 @@ static void run_fast_path(const RtcAppState &state) {
   sensors.temp_hum_a_fallback.priority[1] = TempHumSource::PRESSURE;
   sensors.temp_hum_a_fallback.count = 2;
 
+  const bool headless_power_test_profile = !has_primary_air_sensors(sensors);
+  if (headless_power_test_profile) {
+    apply_headless_power_test_profile(settings);
+    AG_LOGW(TAG, "fast-path headless power-test profile active: sleep interval forced to %d s",
+            HEADLESS_POWER_TEST_SLEEP_INTERVAL_SECONDS);
+  }
+
   auto *sensor_manager = new SensorManager(sensors);
 
   // --- 5. One-shot measurement (blocking, single iteration) ---
@@ -237,10 +260,11 @@ static void run_fast_path(const RtcAppState &state) {
   storage->backup_cache();
 
   // --- 8. Power service
+  const int wake_button_power_pin = headless_power_test_profile ? -1 : PIN_BUTTON_POWER;
   auto *power_service =
       new PowerService(*bms, gpio::native::hal,
                        {
-                           .pin_wake_button_power = PIN_BUTTON_POWER,
+                           .pin_wake_button_power = wake_button_power_pin,
                            .pin_wake_button_boot = -1, // GPIO28 is not RTC-capable
                            .pin_ext_wdt = PIN_EXT_WDT,
                        });
@@ -294,7 +318,6 @@ static void run_full_boot(WakeCause cause, const char *serial_number) {
   // --- 2. Settings ---
   auto *config_store = new NvsConfigStore("go");
   GoSettings settings = load_go_settings(*config_store);
-  print_settings(settings);
 
   // --- 3. GPIO (power enables, initial levels) ---
   init_gpio();
@@ -363,9 +386,21 @@ static void run_full_boot(WakeCause cause, const char *serial_number) {
   CAP1203::Config touch_cfg;
   touch_cfg.delta_sense = TOUCH_DELTA_SENSE;
   auto *touch = new CAP1203(i2c_bus, I2C_ADDR_CAP1203, touch_cfg);
-  if (!touch->init()) {
+  const bool touch_available = touch->init();
+  if (!touch_available) {
     AG_LOGE(TAG, "CAP1203 touch init failed");
   }
+
+  const bool has_measurement_sensors = has_any_measurement_sensors(sensors);
+  const bool headless_power_test_profile =
+      !has_primary_air_sensors(sensors) && !touch_available;
+  if (headless_power_test_profile) {
+    apply_headless_power_test_profile(settings);
+    AG_LOGW(TAG,
+            "Headless power-test profile active: forcing Offline mode, skipping initial measurement, disabling GPIO wake, and forcing %d s sleep interval",
+            HEADLESS_POWER_TEST_SLEEP_INTERVAL_SECONDS);
+  }
+  print_settings(settings);
 
   // --- 11. Storage ---
   auto *rtc_storage = new RtcPayloadCacheStorage();
@@ -419,10 +454,11 @@ static void run_full_boot(WakeCause cause, const char *serial_number) {
       .pin_busy = PIN_DISPLAY_BUSY,
   });
 
+  const int wake_button_power_pin = headless_power_test_profile ? -1 : PIN_BUTTON_POWER;
   auto *power_service =
       new PowerService(*bms, gpio::native::hal,
                        {
-                           .pin_wake_button_power = PIN_BUTTON_POWER,
+                           .pin_wake_button_power = wake_button_power_pin,
                            .pin_wake_button_boot = -1, // GPIO28 is not RTC-capable
                            .pin_ext_wdt = PIN_EXT_WDT,
                        });
@@ -457,7 +493,12 @@ static void run_full_boot(WakeCause cause, const char *serial_number) {
   };
 
   auto *orchestrator =
-      new Orchestrator(event_queue, services, settings, *config_store, serial_number);
+      new Orchestrator(event_queue, services, settings, *config_store, serial_number,
+                       {
+                           .require_initial_measurement =
+                               has_measurement_sensors && !headless_power_test_profile,
+                           .force_offline_mode = headless_power_test_profile,
+                       });
   orchestrator->init(cause);
   orchestrator->run(); // Never returns.
 }

@@ -1,0 +1,5 @@
+{
+    "idf.currentSetup": "/Users/formylife/esp/v5.5.2/esp-idf",
+    "idf.port": "/dev/tty.usbmodem1201",
+    "idf.flashType": "UART"
+}
