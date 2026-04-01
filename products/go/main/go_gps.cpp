@@ -9,6 +9,7 @@
 
 #include "go_gps.h"
 
+#include "ag_log.h"
 #include "go_events.h"
 #include "rtos.h"
 
@@ -20,6 +21,18 @@ static constexpr const char *TAG = "GpsService";
 // empty.  Keeps CPU usage low without introducing latency gaps larger than
 // one NMEA epoch (~1 second).
 static constexpr uint32_t TASK_YIELD_MS = 10;
+
+static const char *fix_type_str(GpsFixType fix_type) {
+  switch (fix_type) {
+  case GpsFixType::Fix2D:
+    return "2D";
+  case GpsFixType::Fix3D:
+    return "3D";
+  case GpsFixType::NoFix:
+  default:
+    return "none";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Construction / destruction
@@ -93,17 +106,50 @@ void GpsService::run() {
   // task lifetime.  stop() blocks on this semaphore before returning.
   _done_sem.create();
 
-  _gps.begin(_config.baud_rate);
+  AG_LOGI(TAG, "start: baud=%d post_interval=%d ms", _config.baud_rate, _config.posting_interval_ms);
+  if (!_gps.begin(_config.baud_rate)) {
+    AG_LOGE(TAG, "start: gps.begin(%d) failed", _config.baud_rate);
+    _running = false;
+  }
+
+  const uint64_t acquisition_start_ms = RTOS::get_time_ms();
   uint64_t last_post_ms = 0;
+  bool saw_sentence = false;
+  bool acquisition_logged = false;
 
   while (_running) {
     if (_gps.read()) {
       const GpsData data = _gps.get_data();
       update_latest_fix(data);
 
+      if (!saw_sentence) {
+        saw_sentence = true;
+        AG_LOGI(TAG, "acquisition: first NMEA sentence received");
+      }
+
       if (!_clock_synced && is_gps_timestamp_valid(data.timestamp)) {
         sync_system_clock(data.timestamp);
         _clock_synced = true;
+        AG_LOGI(TAG, "clock synced from GPS timestamp %04d-%02d-%02d %02d:%02d:%02d UTC",
+                data.timestamp.year, data.timestamp.month, data.timestamp.day, data.timestamp.hour,
+                data.timestamp.minute, data.timestamp.second);
+      }
+
+      if (!acquisition_logged && is_fix_valid(data.fix)) {
+        acquisition_logged = true;
+        if (is_position_valid(data.position) && is_altitude_valid(data.altitude_m)) {
+          AG_LOGI(TAG,
+                  "acquisition: valid %s fix after %lu ms sat=%d lat=%.6f lon=%.6f alt=%.1f m",
+                  fix_type_str(data.fix.fix_type),
+                  static_cast<unsigned long>(RTOS::get_time_ms() - acquisition_start_ms),
+                  data.fix.satellite_count, data.position.latitude, data.position.longitude,
+                  data.altitude_m);
+        } else {
+          AG_LOGI(TAG, "acquisition: valid %s fix after %lu ms sat=%d",
+                  fix_type_str(data.fix.fix_type),
+                  static_cast<unsigned long>(RTOS::get_time_ms() - acquisition_start_ms),
+                  data.fix.satellite_count);
+        }
       }
     }
 
@@ -111,6 +157,13 @@ void GpsService::run() {
     if (now_ms - last_post_ms >= static_cast<uint64_t>(_config.posting_interval_ms)) {
       if (_gps.has_valid_fix()) {
         post_fix_event();
+        const GpsData data = _gps.get_data();
+        AG_LOGI(TAG, "publish: fix=%s sat=%d", fix_type_str(data.fix.fix_type),
+                data.fix.satellite_count);
+      } else if (saw_sentence) {
+        const GpsData data = _gps.get_data();
+        AG_LOGI(TAG, "acquisition: waiting for fix sat=%d hdop=%.1f",
+                data.fix.satellite_count, data.fix.hdop);
       }
       last_post_ms = now_ms;
     }
@@ -119,6 +172,7 @@ void GpsService::run() {
   }
 
   _gps.end();
+  AG_LOGI(TAG, "stop");
 
   // Signal stop() that the task loop has exited before self-deleting.
   if (_done_sem.is_created()) {

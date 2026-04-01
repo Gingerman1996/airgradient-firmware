@@ -67,6 +67,18 @@ static constexpr const char *TAG = "main";
 
 static constexpr const char *FIRMWARE_VERSION = "0.1.0";
 
+#if CONFIG_IDF_TARGET_ESP32C5 && CONFIG_ESP_CONSOLE_UART_DEFAULT
+static_assert(static_cast<int>(PIN_GPS_TX) != 11 || static_cast<int>(PIN_GPS_RX) != 12,
+              "ESP32-C5 default console UART uses GPIO11/GPIO12 and conflicts with the GPS UART. "
+              "Select USB Serial/JTAG for the console before enabling GPS.");
+#endif
+
+#if CONFIG_ESP_CONSOLE_UART_CUSTOM
+static_assert(CONFIG_ESP_CONSOLE_UART_TX_GPIO != static_cast<int>(PIN_GPS_TX) ||
+                  CONFIG_ESP_CONSOLE_UART_RX_GPIO != static_cast<int>(PIN_GPS_RX),
+              "Console UART pins conflict with the GPS UART pins.");
+#endif
+
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------

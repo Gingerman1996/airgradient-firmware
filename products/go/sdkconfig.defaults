@@ -11,6 +11,12 @@ CONFIG_PAYLOAD_CACHE_TYPE_AGO=y
 # underlying IDF issue is resolved.
 CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND=n
 
+# AirGradient Go uses GPIO11/GPIO12 for the GPS UART on ESP32-C5. Keep the
+# console on USB Serial/JTAG so the GPS lines are not claimed by the default
+# console UART.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
 # BLE (NimBLE)
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
