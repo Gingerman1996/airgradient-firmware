@@ -446,6 +446,11 @@ TempHumSource SensorManager::_resolve_temp_hum_a_source() {
 
   for (int i = 0; i < cfg.count; i++) {
     switch (cfg.priority[i]) {
+    case TempHumSource::SHT40:
+      if (_sensors.sht40) {
+        return TempHumSource::SHT40;
+      }
+      break;
     case TempHumSource::DEDICATED:
       if (_sensors.temp_hum) {
         return TempHumSource::DEDICATED;
@@ -478,6 +483,24 @@ void SensorManager::_accumulate_temp_hum_a_fallback(TempHumSource source, TempHu
   TempHumData th;
 
   switch (source) {
+  case TempHumSource::SHT40: {
+    if (!_sensors.sht40) {
+      return;
+    }
+    TempHumData data;
+    if (_sensors.sht40->read(data)) {
+      if (data.is_temp_valid()) {
+        sum_a.temperature += data.temperature;
+        counters.temp_a++;
+      }
+      if (data.is_hum_valid()) {
+        sum_a.humidity += data.humidity;
+        counters.hum_a++;
+      }
+    }
+    return;
+  }
+
   case TempHumSource::DEDICATED:
     _accumulate_temp_hum(sum_a, sum_a, counters);
     return;

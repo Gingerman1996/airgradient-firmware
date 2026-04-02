@@ -41,6 +41,7 @@ inline bool has_group(SensorGroup mask, SensorGroup flag) {
  * @brief Available sources for temp/hum fallback when no dedicated sensor
  */
 enum class TempHumSource {
+  SHT40,     // TempHumSensor* sht40 (dedicated SHT40 sensor)
   DEDICATED, // TempHumSensor* temp_hum
   CO2,       // CO2Sensor* co2 (if supports_temp_hum)
   PM_A,      // PMSensor* pms_a (if supports_temp_hum)
@@ -55,8 +56,9 @@ enum class TempHumSource {
  * temp_hum_a. Default: DEDICATED > CO2 > PM_A > PRESSURE.
  */
 struct TempHumFallbackConfig {
-  static constexpr int MAX_SOURCES = 4;
+  static constexpr int MAX_SOURCES = 5;
   TempHumSource priority[MAX_SOURCES] = {
+      TempHumSource::SHT40,
       TempHumSource::DEDICATED,
       TempHumSource::CO2,
       TempHumSource::PM_A,
@@ -66,6 +68,7 @@ struct TempHumFallbackConfig {
 };
 
 struct Sensors {
+  TempHumSensor *sht40;
   TempHumSensor *temp_hum;
   CO2Sensor *co2;
   PMSensor *pms_a;

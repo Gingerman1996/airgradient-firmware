@@ -40,6 +40,7 @@
 #include "drivers/dps368/dps368.h"
 #include "drivers/nmea_gps/nmea_gps.h"
 #include "drivers/sgp41/sgp41.h"
+#include "drivers/sht40/sht40.h"
 #include "drivers/sps30/sps30.h"
 #include "drivers/stcc4/stcc4.h"
 #include "native_gpio.h"
@@ -144,12 +145,19 @@ static void run_fast_path(const RtcAppState &state) {
   }
 
   // --- 5. Sensor drivers (same construction as full boot) ---
+  auto *sht40 = new SHT40(i2c_bus);
   auto *stcc4 = new STCC4(i2c_bus, I2C_ADDR_STCC4);
   auto *sgp41 = new SGP41(i2c_bus, I2C_ADDR_SGP41);
   auto *sps30 = new SPS30(i2c_bus);
   auto *dps368 = new DPS368(i2c_bus, I2C_ADDR_DPS368);
 
   Sensors sensors{};
+
+  if (sht40->init()) {
+    sensors.sht40 = sht40;
+  } else {
+    AG_LOGE(TAG, "SHT40 init failed");
+  }
 
   if (stcc4->init()) {
     sensors.co2 = stcc4;
@@ -174,11 +182,6 @@ static void run_fast_path(const RtcAppState &state) {
   } else {
     AG_LOGE(TAG, "DPS368 init failed");
   }
-
-  // No dedicated temp/hum sensor; fallback to STCC4 (CO2) then DPS368 (pressure)
-  sensors.temp_hum_a_fallback.priority[0] = TempHumSource::CO2;
-  sensors.temp_hum_a_fallback.priority[1] = TempHumSource::PRESSURE;
-  sensors.temp_hum_a_fallback.count = 2;
 
   auto *sensor_manager = new SensorManager(sensors);
 
@@ -314,12 +317,19 @@ static void run_full_boot(WakeCause cause, const char *serial_number) {
   }
 
   // ---7. Sensor drivers ---
+  auto *sht40 = new SHT40(i2c_bus);
   auto *stcc4 = new STCC4(i2c_bus, I2C_ADDR_STCC4);
   auto *sgp41 = new SGP41(i2c_bus, I2C_ADDR_SGP41);
   auto *sps30 = new SPS30(i2c_bus);
   auto *dps368 = new DPS368(i2c_bus, I2C_ADDR_DPS368);
 
   Sensors sensors{};
+
+  if (sht40->init()) {
+    sensors.sht40 = sht40;
+  } else {
+    AG_LOGE(TAG, "SHT40 init failed");
+  }
 
   if (stcc4->init()) {
     sensors.co2 = stcc4;
@@ -344,11 +354,6 @@ static void run_full_boot(WakeCause cause, const char *serial_number) {
   } else {
     AG_LOGE(TAG, "DPS368 init failed");
   }
-
-  // No dedicated temp/hum sensor; fallback to STCC4 (CO2) then DPS368 (pressure)
-  sensors.temp_hum_a_fallback.priority[0] = TempHumSource::CO2;
-  sensors.temp_hum_a_fallback.priority[1] = TempHumSource::PRESSURE;
-  sensors.temp_hum_a_fallback.count = 2;
 
   // --- 8. Sensors struct + SensorManager ---
   auto *sensor_manager = new SensorManager(sensors);
