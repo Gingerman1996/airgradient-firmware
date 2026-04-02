@@ -95,6 +95,7 @@ private:
   uint32_t _last_other_measurement_ms = 0;
   SensorGroup _last_requested_group = SensorGroup::None;
   uint32_t _last_bms_poll_ms = 0;
+  int _bms_consecutive_failures = 0;
   uint32_t _last_ext_wdt_ms = 0;
   uint32_t _last_input_ms = 0; ///< Reset on every input; drives inactivity
   bool _first_measurement_done = false;

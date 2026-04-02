@@ -30,3 +30,6 @@ idf_component_register(
              u8g2
              fatfs
 )
+
+# Uncomment to force Offline mode and skip measurement-done check for deep sleep testing
+target_compile_definitions(${COMPONENT_LIB} PRIVATE DEEP_SLEEP_TEST)

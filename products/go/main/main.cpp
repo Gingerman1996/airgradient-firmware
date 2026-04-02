@@ -294,6 +294,10 @@ static void run_full_boot(WakeCause cause, const char *serial_number) {
   // --- 2. Settings ---
   auto *config_store = new NvsConfigStore("go");
   GoSettings settings = load_go_settings(*config_store);
+#ifdef DEEP_SLEEP_TEST
+  settings.operating_mode = OperatingMode::Offline;
+  AG_LOGW(TAG, "DEEP_SLEEP_TEST: forcing Offline mode");
+#endif
   print_settings(settings);
 
   // --- 3. GPIO (power enables, initial levels) ---

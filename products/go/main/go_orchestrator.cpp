@@ -124,7 +124,11 @@ void Orchestrator::run() {
 
   while (true) {
     // Sleep check: enter sleep when locked and first measurement is done
+#ifdef DEEP_SLEEP_TEST
+    if (_lock_state == LockState::Locked) {
+#else
     if (_lock_state == LockState::Locked && _first_measurement_done) {
+#endif
       try_enter_sleep();
       // Returns only for light sleep wake or if sleep was not entered
     }
@@ -235,7 +239,25 @@ void Orchestrator::check_timers() {
 }
 
 void Orchestrator::on_bms_timer() {
+  static constexpr int BMS_FAILURE_SKIP_THRESHOLD = 2;
+
+  if (_bms_consecutive_failures >= BMS_FAILURE_SKIP_THRESHOLD) {
+    _last_bms_poll_ms = static_cast<uint32_t>(RTOS::get_time_ms());
+    return;
+  }
+
   _latest_power = _svc.power_service.poll_bms();
+
+  if (_latest_power.charging_status == BmsChargingState::Unknown) {
+    _bms_consecutive_failures++;
+    AG_LOGW(TAG, "on_bms_timer: BMS read failed (%d/%d), %s", _bms_consecutive_failures,
+            BMS_FAILURE_SKIP_THRESHOLD,
+            _bms_consecutive_failures >= BMS_FAILURE_SKIP_THRESHOLD ? "skipping from now on"
+                                                                     : "will retry");
+  } else {
+    _bms_consecutive_failures = 0;
+  }
+
   _svc.power_service.reset_watchdog();
   _last_bms_poll_ms = static_cast<uint32_t>(RTOS::get_time_ms());
 
@@ -918,6 +940,13 @@ BuildContext Orchestrator::build_context() const {
 // ---------------------------------------------------------------------------
 
 void Orchestrator::try_enter_sleep() {
+#ifdef DEEP_SLEEP_TEST
+  _svc.power_service.save_state(snapshot_state());
+  _svc.power_service.reset_ext_watchdog();
+  _svc.power_service.enter_sleep(PowerService::SleepType::Deep,
+                                 static_cast<uint32_t>(_settings.pm_interval_seconds) * 1000);
+  return;
+#endif
   uint32_t now = static_cast<uint32_t>(RTOS::get_time_ms());
   uint32_t awake_ms = now - std::min(_last_pm_measurement_ms, _last_other_measurement_ms);
 
