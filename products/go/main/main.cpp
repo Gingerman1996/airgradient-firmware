@@ -66,11 +66,17 @@
 static constexpr const char *TAG = "main";
 
 static constexpr const char *FIRMWARE_VERSION = "0.1.0";
+static constexpr bool PM_STRESS_TEST_ENABLED = true;
+static constexpr int PM_STRESS_FALLBACK_INTERVAL_SECONDS = 10;
+static constexpr uint32_t PM_STRESS_SENSOR_BOOT_DELAY_MS = 1500;
+static constexpr uint32_t PM_STRESS_OFF_SAMPLE_DELAY_MS = 100;
+static constexpr uint32_t PM_STRESS_WATCHDOG_SERVICE_INTERVAL_MS = 1000;
 
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
 
+static void run_pm_stress_test();
 static void run_fast_path(const RtcAppState &state);
 static void run_button_wake_path(const RtcAppState &state);
 static void run_full_boot(WakeCause cause, const char *serial_number);
@@ -81,6 +87,9 @@ static void init_gpio();
 static void init_spi_buses();
 static BQ25629Bms *init_bms(i2c_master_bus_handle_t i2c_bus);
 static MeasuresAGo measures_to_ago(const Measures &m);
+static void delay_with_watchdogs(PowerService &power_service, uint32_t delay_ms);
+static DisplayValues build_pm_stress_display(const PMData *pm, const Measures *other,
+                                             const PowerSnapshot &bms, const GoSettings &settings);
 static DisplayValues build_fast_path_display(const Measures &measures, const GpsData &gps,
                                              const PowerSnapshot &bms, const GoSettings &settings);
 static DisplayValues build_wake_values(const RtcDisplaySnapshot &snapshot, bool snapshot_valid);
@@ -90,6 +99,11 @@ static DisplayValues build_wake_values(const RtcDisplaySnapshot &snapshot, bool 
 // ===========================================================================
 
 extern "C" void app_main() {
+  if (PM_STRESS_TEST_ENABLED) {
+    run_pm_stress_test();
+    return;
+  }
+
   RTOS::delay_ms(100);
   WakeCause cause = PowerService::get_wake_cause();
 
@@ -113,6 +127,210 @@ extern "C" void app_main() {
   AG_LOGI(TAG, "Serial number: %s", serial_number.c_str());
   run_full_boot(cause, serial_number.c_str());
   // Never returns.
+}
+
+// ===========================================================================
+// PM stress test boot
+//
+// Test-branch runtime: power the PMID rail only for each SPS30 reading,
+// then turn it back off. Logs PM + other-sensor + PMID telemetry and updates
+// the Home screen with the latest valid values.
+// ===========================================================================
+
+static void run_pm_stress_test() {
+  AG_LOGI(TAG, "run_pm_stress_test: entering PM-only stress loop");
+
+  init_nvs();
+  auto *config_store = new NvsConfigStore("go");
+  GoSettings settings = load_go_settings(*config_store);
+  print_settings(settings);
+
+  uint32_t pm_interval_ms = static_cast<uint32_t>((settings.pm_interval_seconds > 0)
+                                                      ? settings.pm_interval_seconds
+                                                      : PM_STRESS_FALLBACK_INTERVAL_SECONDS) *
+                            1000;
+  if (settings.pm_interval_seconds <= 0) {
+    AG_LOGW(TAG, "pm stress: pm_interval_seconds disabled, using fallback %d s",
+            PM_STRESS_FALLBACK_INTERVAL_SECONDS);
+  }
+
+  init_gpio();
+  RTOS::delay_ms(100);
+
+  i2c_master_bus_handle_t i2c_bus = init_i2c_bus();
+  RTOS::delay_ms(100);
+
+  init_spi_buses();
+
+  auto *bms = init_bms(i2c_bus);
+  if (!bms->init()) {
+    AG_LOGE(TAG, "pm stress: BMS init failed");
+  }
+
+  auto *display = new DisplayService({
+      .spi_host = SPI_HOST,
+      .pin_cs = PIN_DISPLAY_CS,
+      .pin_dc = PIN_DISPLAY_DC,
+      .pin_rst = PIN_DISPLAY_RST,
+      .pin_busy = PIN_DISPLAY_BUSY,
+  });
+
+  auto *power_service = new PowerService(*bms, gpio::native::hal,
+                                         {
+                                             .pin_wake_button_power = PIN_BUTTON_POWER,
+                                             .pin_wake_button_boot = -1,
+                                             .pin_ext_wdt = PIN_EXT_WDT,
+                                         });
+
+  power_service->init_ext_watchdog();
+  power_service->reset_ext_watchdog();
+  power_service->reset_watchdog();
+
+  if (!bms->disable_boost()) {
+    AG_LOGW(TAG, "pm stress: failed to force PMID off after BMS init");
+  }
+  delay_with_watchdogs(*power_service, PM_STRESS_OFF_SAMPLE_DELAY_MS);
+
+  auto *stcc4 = new STCC4(i2c_bus, I2C_ADDR_STCC4);
+  auto *sgp41 = new SGP41(i2c_bus, I2C_ADDR_SGP41);
+  auto *dps368 = new DPS368(i2c_bus, I2C_ADDR_DPS368);
+
+  Sensors sensors{};
+
+  if (stcc4->init()) {
+    sensors.co2 = stcc4;
+  } else {
+    AG_LOGE(TAG, "pm stress: STCC4 init failed");
+  }
+
+  if (sgp41->init()) {
+    sensors.tvoc_nox = sgp41;
+  } else {
+    AG_LOGE(TAG, "pm stress: SGP41 init failed");
+  }
+
+  if (dps368->init()) {
+    sensors.pressure = dps368;
+  } else {
+    AG_LOGE(TAG, "pm stress: DPS368 init failed");
+  }
+
+  sensors.temp_hum_a_fallback.priority[0] = TempHumSource::CO2;
+  sensors.temp_hum_a_fallback.priority[1] = TempHumSource::PRESSURE;
+  sensors.temp_hum_a_fallback.count = 2;
+
+  auto *sensor_manager = new SensorManager(sensors);
+
+  PowerSnapshot initial_bms = power_service->poll_bms();
+  display->init(build_pm_stress_display(nullptr, nullptr, initial_bms, settings));
+
+  auto *sps30 = new SPS30(i2c_bus);
+  bool sps30_initialized = false;
+
+  while (true) {
+    const uint32_t cycle_start_ms = static_cast<uint32_t>(RTOS::get_time_ms());
+
+    const Measures other_measures = sensor_manager->start_measures(1, SensorGroup::Other);
+
+    AG_LOGI(TAG, "pm stress: PMID ON");
+    bool boost_enabled = bms->enable_boost();
+    power_service->reset_watchdog();
+    power_service->reset_ext_watchdog();
+
+    if (!boost_enabled) {
+      AG_LOGE(TAG, "pm stress: enable boost failed");
+      PowerSnapshot bms_snap = power_service->poll_bms();
+      (void)display->update(build_pm_stress_display(nullptr, &other_measures, bms_snap, settings),
+                            true);
+      delay_with_watchdogs(*power_service, pm_interval_ms);
+      continue;
+    }
+
+    delay_with_watchdogs(*power_service, PM_STRESS_SENSOR_BOOT_DELAY_MS);
+
+    if (!sps30_initialized) {
+      sps30_initialized = sps30->init();
+      if (!sps30_initialized) {
+        AG_LOGE(TAG, "pm stress: SPS30 init failed");
+      }
+    }
+
+    PMData pm = {
+        .pm_01 = MeasuresInvalid::PM,
+        .pm_25 = MeasuresInvalid::PM,
+        .pm_10 = MeasuresInvalid::PM,
+        .pm_01_sp = MeasuresInvalid::PM,
+        .pm_25_sp = MeasuresInvalid::PM,
+        .pm_10_sp = MeasuresInvalid::PM,
+        .pm_03_pc = MeasuresInvalid::PM,
+        .pm_05_pc = MeasuresInvalid::PM,
+        .pm_01_pc = MeasuresInvalid::PM,
+        .pm_25_pc = MeasuresInvalid::PM,
+        .pm_5_pc = MeasuresInvalid::PM,
+        .pm_10_pc = MeasuresInvalid::PM,
+    };
+    const bool read_ok = sps30_initialized && sps30->read(pm);
+
+    PowerSnapshot on_bms = power_service->poll_bms();
+    power_service->reset_watchdog();
+
+    const int log_co2 =
+        other_measures.co2.is_valid() ? other_measures.co2.co2 : MeasuresInvalid::CO2;
+    const float log_temp = other_measures.temp_hum_a.is_temp_valid()
+                               ? other_measures.temp_hum_a.temperature
+                               : MeasuresInvalid::TEMPERATURE;
+    const float log_hum = other_measures.temp_hum_a.is_hum_valid()
+                              ? other_measures.temp_hum_a.humidity
+                              : MeasuresInvalid::HUMIDITY;
+    const int log_tvoc = other_measures.tvoc_nox.is_tvoc_index_valid()
+                             ? other_measures.tvoc_nox.tvoc_index
+                             : MeasuresInvalid::TVOC;
+    const int log_nox = other_measures.tvoc_nox.is_nox_index_valid()
+                            ? other_measures.tvoc_nox.nox_index
+                            : MeasuresInvalid::NOX;
+    const float log_pressure = other_measures.pressure.is_pressure_valid()
+                                   ? other_measures.pressure.pressure
+                                   : MeasuresInvalid::PM;
+
+    if (read_ok) {
+      AG_LOGI(TAG,
+              "pm stress: PM1.0=%.1f PM2.5=%.1f PM10=%.1f ug/m3 | CO2=%d TVOC=%d NOX=%d T=%.1fC "
+              "H=%.1f%% P=%.1fhPa | PMID=%umV battery=%.1f%%",
+              pm.pm_01, pm.pm_25, pm.pm_10, log_co2, log_tvoc, log_nox, log_temp, log_hum,
+              log_pressure, on_bms.telemetry.pmid_voltage_mv, on_bms.battery_percentage);
+    } else {
+      AG_LOGW(TAG,
+              "pm stress: SPS30 read failed | CO2=%d TVOC=%d NOX=%d T=%.1fC H=%.1f%% P=%.1fhPa | "
+              "PMID=%umV battery=%.1f%%",
+              log_co2, log_tvoc, log_nox, log_temp, log_hum, log_pressure,
+              on_bms.telemetry.pmid_voltage_mv, on_bms.battery_percentage);
+    }
+
+    AG_LOGI(TAG, "pm stress: PMID OFF");
+    if (!bms->disable_boost()) {
+      AG_LOGE(TAG, "pm stress: disable boost failed");
+    }
+
+    delay_with_watchdogs(*power_service, PM_STRESS_OFF_SAMPLE_DELAY_MS);
+
+    PowerSnapshot off_bms = power_service->poll_bms();
+    power_service->reset_watchdog();
+    AG_LOGI(TAG, "pm stress: PMID after OFF = %umV", off_bms.telemetry.pmid_voltage_mv);
+
+    if (!display->update(
+            build_pm_stress_display(read_ok ? &pm : nullptr, &other_measures, off_bms, settings),
+            true)) {
+      AG_LOGW(TAG, "pm stress: display update skipped");
+    }
+
+    const uint32_t elapsed_ms = static_cast<uint32_t>(RTOS::get_time_ms()) - cycle_start_ms;
+    if (elapsed_ms < pm_interval_ms) {
+      delay_with_watchdogs(*power_service, pm_interval_ms - elapsed_ms);
+    } else {
+      AG_LOGW(TAG, "pm stress: cycle overran interval (%lu ms >= %lu ms)",
+              static_cast<unsigned long>(elapsed_ms), static_cast<unsigned long>(pm_interval_ms));
+    }
+  }
 }
 
 // ===========================================================================
@@ -819,6 +1037,74 @@ static MeasuresAGo measures_to_ago(const Measures &m) {
   ago.tvoc_nox.nox_index = ago.tvoc_nox.nox_raw;
 
   return ago;
+}
+
+// ---------------------------------------------------------------------------
+// delay_with_watchdogs
+//
+// Keep the BMS and external watchdogs alive during long PM-stress waits.
+// ---------------------------------------------------------------------------
+
+static void delay_with_watchdogs(PowerService &power_service, uint32_t delay_ms) {
+  uint32_t remaining_ms = delay_ms;
+  while (remaining_ms > 0) {
+    const uint32_t chunk_ms = std::min(remaining_ms, PM_STRESS_WATCHDOG_SERVICE_INTERVAL_MS);
+    RTOS::delay_ms(chunk_ms);
+    power_service.reset_watchdog();
+    power_service.reset_ext_watchdog();
+    remaining_ms -= chunk_ms;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// build_pm_stress_display
+//
+// Build the Home screen values for the PM stress loop.
+// PM is read via explicit PMID gating; the other fields come from the
+// non-PM SensorManager cycle and are rendered when valid.
+// ---------------------------------------------------------------------------
+
+static DisplayValues build_pm_stress_display(const PMData *pm, const Measures *other,
+                                             const PowerSnapshot &bms, const GoSettings &settings) {
+  DisplayValues v{};
+
+  v.screen = Screen::Home;
+  v.locked = true;
+  v.pm_use_usaqi = settings.pm_use_usaqi;
+  v.use_fahrenheit = settings.use_fahrenheit;
+  v.display_off = false;
+
+  if (pm != nullptr && pm->is_pm_25_valid()) {
+    v.pm25_ugm3 = pm->pm_25;
+  }
+
+  if (other != nullptr) {
+    if (other->co2.is_valid()) {
+      v.co2_ppm = other->co2.co2;
+    }
+    if (other->temp_hum_a.is_temp_valid()) {
+      v.temperature_c = other->temp_hum_a.temperature;
+    }
+    if (other->temp_hum_a.is_hum_valid()) {
+      v.humidity_pct = other->temp_hum_a.humidity;
+    }
+    if (other->tvoc_nox.is_tvoc_index_valid()) {
+      v.tvoc_index = other->tvoc_nox.tvoc_index;
+    }
+    if (other->tvoc_nox.is_nox_index_valid()) {
+      v.nox_index = other->tvoc_nox.nox_index;
+    }
+    if (other->pressure.is_pressure_valid()) {
+      v.pressure_hpa = other->pressure.pressure;
+    }
+  }
+
+  if (bms.battery_percentage >= 0.0f) {
+    v.battery_pct = static_cast<uint8_t>(bms.battery_percentage);
+  }
+  v.is_battery_charging = is_bms_charging(bms.charging_status);
+
+  return v;
 }
 
 // ---------------------------------------------------------------------------

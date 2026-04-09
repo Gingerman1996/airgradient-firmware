@@ -261,3 +261,19 @@ bool BQ25629Bms::enable_boost() {
 
   return true;
 }
+
+bool BQ25629Bms::disable_boost() {
+  esp_err_t err = _charger.enable_otg(false);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "disable_boost: enable_otg(false) failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  err = _charger.enable_bypass_otg(false);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "disable_boost: enable_bypass_otg(false) failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  return true;
+}

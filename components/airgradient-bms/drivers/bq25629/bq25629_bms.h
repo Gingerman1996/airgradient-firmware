@@ -48,6 +48,10 @@ public:
   bool enter_ship_mode() override;
   bool enable_boost() override;
 
+  /// Disable PMID boost/bypass output.
+  /// Test-branch helper used by the AGo PM stress loop.
+  bool disable_boost();
+
 private:
   drivers::BQ25629 _charger;
   drivers::BQ25629_Config _config;
