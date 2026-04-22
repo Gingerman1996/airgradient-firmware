@@ -26,6 +26,7 @@ mode for the SPS30 supply:
 | `go_types.h` | product | `RtcAppState`, `WakeCause`, `LockState` |
 | `go_settings.h` | product | `GoSettings` for interval-based sleep decisions |
 | `esp_sleep.h` | ESP-IDF | `esp_sleep_*` functions (deep sleep) |
+| `esp_pm.h` | ESP-IDF | `esp_pm_lock_*` functions (light sleep lock) |
 
 ## PowerSnapshot Fields
 
@@ -86,6 +87,44 @@ sleep_ms <  deep_sleep_threshold_ms → {None, 0}   (stay awake)
 The single `measure_interval_seconds` (always ≥ 1) determines the sleep
 duration directly. `awake_ms` is subtracted so the total cycle (awake +
 sleep) matches the configured interval.
+
+## Light Sleep Lock
+
+When `decide_sleep()` returns `None` in Offline mode (interval too short
+for deep sleep), the ESP-IDF PM framework can automatically enter light
+sleep during FreeRTOS idle periods — but only if the application's
+`ESP_PM_NO_LIGHT_SLEEP` lock is released.
+
+`PowerService` owns a file-scope `ESP_PM_NO_LIGHT_SLEEP` lock handle.
+Three methods manage it:
+
+| Method | Effect | Guarded |
+|---|---|---|
+| `init_light_sleep_lock()` | Create lock and acquire (block light sleep). Called once at boot in `init_power()`. | `#ifndef TEST_HOST` for ESP PM calls; `_light_sleep_lock_held` updated unconditionally |
+| `acquire_light_sleep_lock()` | Re-acquire (block light sleep). Idempotent — no-op if already held. | Same |
+| `release_light_sleep_lock()` | Release (allow light sleep). Idempotent — no-op if already released. | Same |
+
+The orchestrator calls `update_light_sleep_lock()` on every state
+transition that can affect eligibility:
+
+| Call site | Trigger |
+|---|---|
+| `init()` | Boot — evaluate initial state |
+| `lock()` | User locked — may now allow light sleep |
+| `unlock()` | User unlocked — must block light sleep |
+| `change_mode()` | Mode changed — entering/leaving Offline |
+
+The condition is simple:
+
+```
+Offline + Locked → release (allow light sleep)
+Anything else   → acquire (block light sleep)
+```
+
+When the interval is long enough for deep sleep, `try_enter_sleep()` enters
+deep sleep on the next loop iteration — the lock state is irrelevant since
+the CPU reboots.  When the interval is too short, the released lock allows
+the CPU to enter light sleep during `queue_receive()` idle windows.
 
 ## Sleep Entry
 
@@ -185,7 +224,7 @@ condition is naturally false on the first power-on and falls through to
 When true, `app_main` calls `run_button_wake_path(state)` which renders the
 wake frame immediately from the RTC display snapshot and initializes
 peripherals in parallel while the display refreshes. See
-[ARCHITECTURE.md §7.4](../ARCHITECTURE.md) for the four-phase sequence.
+[ARCHITECTURE.md §7.5](../ARCHITECTURE.md) for the four-phase sequence.
 
 ### All other cases
 
@@ -300,3 +339,6 @@ Pulse points:
 | `shutdown()` | No | BMS hardware command |
 | `init_ext_watchdog()` | Yes (mock gpio::Hal) | GPIO config via HAL |
 | `reset_ext_watchdog()` | Yes (mock gpio::Hal) | GPIO pulse via HAL |
+| `init_light_sleep_lock()` | Yes | ESP PM calls guarded; `_light_sleep_lock_held` updated |
+| `acquire_light_sleep_lock()` | Yes | Idempotent; tracks state via `_light_sleep_lock_held` |
+| `release_light_sleep_lock()` | Yes | Idempotent; tracks state via `_light_sleep_lock_held` |

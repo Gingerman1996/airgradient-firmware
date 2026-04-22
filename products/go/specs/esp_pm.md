@@ -112,7 +112,7 @@ automatically by `CONFIG_PM_DFS_INIT_AUTO`.
 |---|---|---|---|
 | Layer 1 — DFS | Done | Not needed | **Complete** |
 | Layer 2 — BLE modem sleep | Done | Not needed | **Complete** |
-| Layer 3 — Auto light sleep | Done | `ESP_PM_NO_LIGHT_SLEEP` lock management needed | **Pending** |
+| Layer 3 — Auto light sleep | Done | `ESP_PM_NO_LIGHT_SLEEP` lock management | **Complete** |
 
 ## Open Questions
 

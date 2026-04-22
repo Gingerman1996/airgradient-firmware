@@ -228,4 +228,4 @@ on: no BSP layer, inline initialization in main.cpp, stack-allocated objects,
 settling delays, fast-path NVS load, and sensor serial interface selection.
 
 See the BootContext/BootHandoff design notes in this file and
-[ARCHITECTURE.md §7.4](../ARCHITECTURE.md) for the boot path overview.
+[ARCHITECTURE.md §7.5](../ARCHITECTURE.md) for the boot path overview.

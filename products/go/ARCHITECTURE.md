@@ -294,13 +294,35 @@ synchronous (prepare what to render), but the hardware refresh is async.
 
 ## 7. Power Management
 
-### 7.1 Sleep Eligibility
+### 7.1 ESP-IDF Power Management Framework
 
-Sleep is only eligible when:
-- The operating mode is **Offline** (Portable and Stationary never sleep), and
+The firmware enables the ESP-IDF PM framework for three layers of power
+savings that apply across all operating modes:
+
+| Layer | Mechanism | When Active |
+|---|---|---|
+| DFS | CPU frequency drops from 240 MHz to XTAL (~40 MHz) when idle | Always, all modes |
+| BLE modem sleep | BLE radio sleeps between advertising/connection events | Portable mode (BLE active) |
+| Auto light sleep | CPU enters light sleep during FreeRTOS idle periods | Offline, locked, short intervals |
+
+DFS and BLE modem sleep are managed entirely by ESP-IDF drivers and build
+configuration (`CONFIG_PM_DFS_INIT_AUTO`, `CONFIG_BT_LE_SLEEP_ENABLE`).
+
+Auto light sleep requires application-level lock management: `PowerService`
+holds an `ESP_PM_NO_LIGHT_SLEEP` lock that is acquired at boot and released
+only when the device is Offline and locked.  On ESP32-C5, the BLE controller
+holds its own `ESP_PM_NO_LIGHT_SLEEP` lock while active, so auto light sleep
+is inherently blocked in Portable mode regardless of the application lock.
+
+See [specs/esp_pm.md](../specs/esp_pm.md) for the full feature spec.
+
+### 7.2 Deep Sleep Eligibility
+
+Deep sleep is only eligible when:
+- The operating mode is **Offline** (Portable and Stationary never deep sleep), and
 - The device is **locked** (never sleep while user is interacting with menus).
 
-### 7.2 Sleep Type Selection
+### 7.3 Sleep Type Selection
 
 `PowerService::decide_sleep()` computes sleep type and duration in one call:
 
@@ -314,12 +336,12 @@ sleep_ms = (measure_interval_seconds * 1000) - awake_ms   (clamped to 0)
 | < `deep_sleep_threshold_ms` | None (stay awake) | Reboot overhead ≥ sleep duration; loop instead |
 
 The threshold is a tunable constant (`Config::deep_sleep_threshold_ms`), set to
-5 s for AGo. Combined with the PM sensor warm-hold (§7.3), the fast-path
+5 s for AGo. Combined with the PM sensor warm-hold (§7.4), the fast-path
 boot takes only ~4–7 s for warm wakes (skipping the 10 s warmup), making a
 5 s threshold viable. The awake time is subtracted so the total cycle
 (awake + sleep) matches the configured interval.
 
-### 7.3 Sleep Entry
+### 7.4 Sleep Entry
 
 ```
 1. Final display update (wait=true — ensures the e-paper refresh completes)
@@ -346,7 +368,7 @@ boot takes only ~4–7 s for warm wakes (skipping the 10 s warmup), making a
 For sleeps ≥ 20 s the PM sensor powers off normally (GPIO floats during sleep)
 and the full 10 s warmup runs on wake.
 
-### 7.4 Wake and Boot Path
+### 7.5 Wake and Boot Path
 
 Deep sleep reboots the CPU. All tasks restart from `app_main`. Two
 abbreviated paths exist to avoid the full event-loop overhead when it is
@@ -393,7 +415,7 @@ unlock frame). The display worker holds the SPI bus during the ~3 s refresh,
 which naturally prevents NAND access until the bus is free — no explicit
 synchronization needed.
 
-### 7.5 Shutdown
+### 7.6 Shutdown
 
 Button 1 long press triggers BMS QoN (ship mode) via
 `BmsDevice::enter_ship_mode()` on the BQ25629. The device fully powers off.
