@@ -228,6 +228,7 @@ static void init_power(BootContext &ctx) {
                                        });
   ctx.power_service->init_ext_watchdog();
   ctx.power_service->reset_ext_watchdog();
+  ctx.power_service->init_light_sleep_lock();
 }
 
 /// Initialize display service (construction only, no init/paint).

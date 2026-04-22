@@ -139,6 +139,23 @@ public:
   void reset_ext_watchdog();
 
   // -------------------------------------------------------------------------
+  // Light sleep lock (ESP-IDF PM)
+  // -------------------------------------------------------------------------
+
+  /// Create and immediately acquire an ESP_PM_NO_LIGHT_SLEEP lock.
+  /// Must be called once during init, before any release.
+  /// No-op under TEST_HOST.
+  void init_light_sleep_lock();
+
+  /// Acquire the light sleep lock (block auto light sleep).
+  /// Idempotent — no-op if already held.
+  void acquire_light_sleep_lock();
+
+  /// Release the light sleep lock (allow auto light sleep).
+  /// Idempotent — no-op if already released.
+  void release_light_sleep_lock();
+
+  // -------------------------------------------------------------------------
   // RTC state persistence
   // -------------------------------------------------------------------------
 
@@ -232,6 +249,7 @@ private:
   const gpio::Hal &_gpio;
   Config _config;
   BmsPmidMode _pmid_mode = BmsPmidMode::Unknown;
+  bool _light_sleep_lock_held = true; ///< Tracks PM lock state for idempotency
 
   /// Configure timer and GPIO wake sources before entering sleep.
   /// Wrapped in #ifndef TEST_HOST — not callable from host test builds.

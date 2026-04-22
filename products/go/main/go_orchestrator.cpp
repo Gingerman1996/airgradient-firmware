@@ -154,6 +154,7 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
   }
 
   init_ble_if_portable();
+  update_light_sleep_lock();
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +566,7 @@ void Orchestrator::lock() {
   _svc.ui_manager.show_snackbar("Locked");
   _lock_state = LockState::Locked;
   _svc.ui_manager.reset_to_home();
+  update_light_sleep_lock();
   update_display();
 }
 
@@ -573,6 +575,7 @@ void Orchestrator::unlock() {
   _svc.ui_manager.show_snackbar("Unlocked");
   _lock_state = LockState::Unlocked;
   _last_input_ms = static_cast<uint32_t>(RTOS::get_time_ms());
+  update_light_sleep_lock();
 
   // Request a quick measurement so the user sees fresh data
   _svc.sensor_producer.request_measurement(1, SensorGroup::All);
@@ -631,6 +634,7 @@ void Orchestrator::change_mode(OperatingMode new_mode) {
 
   // Future: enable/disable WiFi, HTTP server based on mode
 
+  update_light_sleep_lock();
   _svc.ui_manager.show_snackbar("Mode changed");
   update_display();
 }
@@ -1078,6 +1082,23 @@ void Orchestrator::prepare_for_sleep(uint32_t sleep_duration_ms) {
 
   // Reset external watchdog last — gives it the full timeout window during sleep.
   _svc.power_service.reset_ext_watchdog();
+}
+
+// ---------------------------------------------------------------------------
+// Light sleep lock
+// ---------------------------------------------------------------------------
+
+void Orchestrator::update_light_sleep_lock() {
+  // Allow auto light sleep only in Offline mode while locked.
+  // In Portable/Stationary, the BLE/WiFi controller holds its own
+  // ESP_PM_NO_LIGHT_SLEEP lock, but we hold ours as well for clarity.
+  // When Offline+Locked with a short interval, deep sleep returns None and
+  // auto light sleep fills the idle gap instead.
+  if (_mode == OperatingMode::Offline && _lock_state == LockState::Locked) {
+    _svc.power_service.release_light_sleep_lock();
+  } else {
+    _svc.power_service.acquire_light_sleep_lock();
+  }
 }
 
 // ---------------------------------------------------------------------------

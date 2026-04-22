@@ -365,6 +365,12 @@ void PowerService::init_ext_watchdog() {}
 
 void PowerService::reset_ext_watchdog() {}
 
+void PowerService::init_light_sleep_lock() {}
+
+void PowerService::acquire_light_sleep_lock() { _light_sleep_lock_held = true; }
+
+void PowerService::release_light_sleep_lock() { _light_sleep_lock_held = false; }
+
 // ============================================================================
 // Free functions from go_power.h
 // ============================================================================

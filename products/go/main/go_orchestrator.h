@@ -158,6 +158,7 @@ private:
   // --- Sleep ---
   void try_enter_sleep();
   void prepare_for_sleep(uint32_t sleep_duration_ms);
+  void update_light_sleep_lock();
 
   // --- BLE ---
   void init_ble_if_portable();

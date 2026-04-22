@@ -31,6 +31,7 @@
 
 #ifndef TEST_HOST
 #include "driver/gpio.h"
+#include "esp_pm.h"
 #include "esp_sleep.h"
 #endif
 
@@ -55,6 +56,18 @@ static constexpr const char *TAG = "PowerService";
 
 RTC_DATA_ATTR static RtcAppState s_rtc_state;
 RTC_DATA_ATTR static bool s_rtc_state_valid = false;
+
+// ---------------------------------------------------------------------------
+// Light sleep lock handle (ESP-IDF PM)
+//
+// File-scope like the RTC state — only one PowerService instance exists.
+// Under TEST_HOST the handle does not exist; methods use _light_sleep_lock_held
+// alone to track state for host-test observability.
+// ---------------------------------------------------------------------------
+
+#ifndef TEST_HOST
+static esp_pm_lock_handle_t s_light_sleep_lock = nullptr;
+#endif
 
 // ---------------------------------------------------------------------------
 // Construction
@@ -195,6 +208,60 @@ void PowerService::reset_ext_watchdog() {
     return;
   }
   ext_watchdog_reset(_gpio, _config.pin_ext_wdt);
+}
+
+// ---------------------------------------------------------------------------
+// Light sleep lock (ESP-IDF PM)
+// ---------------------------------------------------------------------------
+
+void PowerService::init_light_sleep_lock() {
+#ifndef TEST_HOST
+  esp_err_t err = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "go_ls", &s_light_sleep_lock);
+  if (err != ESP_OK) {
+    AG_LOGE(TAG, "init_light_sleep_lock: create failed (%s)", esp_err_to_name(err));
+    return;
+  }
+  err = esp_pm_lock_acquire(s_light_sleep_lock);
+  if (err != ESP_OK) {
+    AG_LOGE(TAG, "init_light_sleep_lock: acquire failed (%s)", esp_err_to_name(err));
+  }
+#endif
+  _light_sleep_lock_held = true;
+  AG_LOGI(TAG, "init_light_sleep_lock: created and acquired");
+}
+
+void PowerService::acquire_light_sleep_lock() {
+  if (_light_sleep_lock_held) {
+    return;
+  }
+#ifndef TEST_HOST
+  if (s_light_sleep_lock != nullptr) {
+    esp_err_t err = esp_pm_lock_acquire(s_light_sleep_lock);
+    if (err != ESP_OK) {
+      AG_LOGE(TAG, "acquire_light_sleep_lock: failed (%s)", esp_err_to_name(err));
+      return;
+    }
+  }
+#endif
+  _light_sleep_lock_held = true;
+  AG_LOGI(TAG, "acquire_light_sleep_lock: light sleep blocked");
+}
+
+void PowerService::release_light_sleep_lock() {
+  if (!_light_sleep_lock_held) {
+    return;
+  }
+#ifndef TEST_HOST
+  if (s_light_sleep_lock != nullptr) {
+    esp_err_t err = esp_pm_lock_release(s_light_sleep_lock);
+    if (err != ESP_OK) {
+      AG_LOGE(TAG, "release_light_sleep_lock: failed (%s)", esp_err_to_name(err));
+      return;
+    }
+  }
+#endif
+  _light_sleep_lock_held = false;
+  AG_LOGI(TAG, "release_light_sleep_lock: light sleep allowed");
 }
 
 // ---------------------------------------------------------------------------
