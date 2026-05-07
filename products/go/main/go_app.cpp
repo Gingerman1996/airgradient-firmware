@@ -558,10 +558,15 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
   led->init();
   led->start();
 
-  // Boot self-test: brief white flash on all three touch LEDs
+  // Boot self-test: brief white flash on all three touch LEDs.
+  // Space the calls so each one finishes before the next is enqueued — the
+  // LedService worker preempts in-flight holds when a new command arrives, so
+  // back-to-back enqueues would only show the last LED.
   if (cause == WakeCause::PowerOn) {
     led->flash_white(LedService::Led::Select, 76, 200);
+    RTOS::delay_ms(220);
     led->flash_white(LedService::Led::Left, 76, 200);
+    RTOS::delay_ms(220);
     led->flash_white(LedService::Led::Right, 76, 200);
   }
 

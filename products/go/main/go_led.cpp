@@ -87,9 +87,13 @@ bool LP5036::set_rgb(uint8_t b_channel, uint8_t r, uint8_t g, uint8_t b) {
   if (b_channel + 2 >= NUM_CHANNELS) {
     return false;
   }
-  // v0.3 mapping per OUT register order: B, G, R contiguous
-  uint8_t buf[3] = {b, g, r};
-  return _write_block(REG_OUT0_COLOR + b_channel, buf, sizeof(buf));
+  // Three discrete writes — avoids dependency on AUTO_INCR_EN bit being set
+  // exactly the way we assumed in DEVICE_CONFIG1.  At 400 kHz each transaction
+  // is ~250 µs so the whole LED update is well under 1 ms.
+  // v0.3 mapping per OUT register order: B, G, R contiguous.
+  return _write_reg(REG_OUT0_COLOR + b_channel, b) &&
+         _write_reg(REG_OUT0_COLOR + b_channel + 1, g) &&
+         _write_reg(REG_OUT0_COLOR + b_channel + 2, r);
 }
 
 bool LP5036::_write_reg(uint8_t reg, uint8_t value) {
@@ -205,15 +209,29 @@ void LedService::_task_entry(void *arg) { static_cast<LedService *>(arg)->_run()
 
 void LedService::_run() {
   Cmd c;
-  while (RTOS::queue_receive(_queue, &c, UINT32_MAX)) {
+  if (!RTOS::queue_receive(_queue, &c, UINT32_MAX)) {
+    return;
+  }
+  while (true) {
+    bool preempted = false;
+
     switch (c.kind) {
-    case Cmd::Kind::FlashOn:
+    case Cmd::Kind::FlashOn: {
       _set_led_rgb(c.led, c.r, c.g, c.b);
       if (c.duration_ms > 0) {
-        RTOS::delay_ms(c.duration_ms);
+        // Wait for the hold duration OR for a new command — whichever first.
+        // A new command preempts: we abandon the off-write and restart with
+        // the new command immediately so the latest touch always wins.
+        Cmd next;
+        if (RTOS::queue_receive(_queue, &next, c.duration_ms)) {
+          c = next;
+          preempted = true;
+          break;
+        }
         _set_led_rgb(c.led, 0, 0, 0);
       }
       break;
+    }
     case Cmd::Kind::FlashOff:
       _set_led_rgb(c.led, 0, 0, 0);
       break;
@@ -222,6 +240,13 @@ void LedService::_run() {
         _config.driver->set_channel(ch, 0);
       }
       break;
+    }
+
+    if (!preempted) {
+      // Block until the next command.
+      if (!RTOS::queue_receive(_queue, &c, UINT32_MAX)) {
+        return;
+      }
     }
   }
 }
