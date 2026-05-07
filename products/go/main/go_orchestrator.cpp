@@ -558,27 +558,6 @@ void Orchestrator::on_input(const InputEventData &input) {
     return;
   }
 
-  // Unlocked: short single tone on accepted touch — frequency per channel
-  switch (input.source) {
-  case InputSource::TouchDown: {
-    static constexpr BuzzerService::Note kPattern[] = {{2200, 40}};
-    _svc.buzzer.play(kPattern, sizeof(kPattern) / sizeof(kPattern[0]));
-    break;
-  }
-  case InputSource::TouchUp: {
-    static constexpr BuzzerService::Note kPattern[] = {{2700, 40}};
-    _svc.buzzer.play(kPattern, sizeof(kPattern) / sizeof(kPattern[0]));
-    break;
-  }
-  case InputSource::TouchEnter: {
-    static constexpr BuzzerService::Note kPattern[] = {{3200, 40}};
-    _svc.buzzer.play(kPattern, sizeof(kPattern) / sizeof(kPattern[0]));
-    break;
-  }
-  default:
-    break;
-  }
-
   // Unlocked: forward to UI Manager
   UIActionResult result = _svc.ui_manager.handle_input(input.source, input.type);
 
