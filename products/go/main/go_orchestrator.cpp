@@ -558,20 +558,20 @@ void Orchestrator::on_input(const InputEventData &input) {
     return;
   }
 
-  // Unlocked: per-channel touch feedback (only on accepted touch events)
+  // Unlocked: short single tone on accepted touch — frequency per channel
   switch (input.source) {
   case InputSource::TouchDown: {
-    static constexpr BuzzerService::Note kPattern[] = {{2200, 30}};
+    static constexpr BuzzerService::Note kPattern[] = {{2200, 40}};
     _svc.buzzer.play(kPattern, sizeof(kPattern) / sizeof(kPattern[0]));
     break;
   }
   case InputSource::TouchUp: {
-    static constexpr BuzzerService::Note kPattern[] = {{2700, 30}};
+    static constexpr BuzzerService::Note kPattern[] = {{2700, 40}};
     _svc.buzzer.play(kPattern, sizeof(kPattern) / sizeof(kPattern[0]));
     break;
   }
   case InputSource::TouchEnter: {
-    static constexpr BuzzerService::Note kPattern[] = {{3200, 25}, {0, 30}, {3200, 25}};
+    static constexpr BuzzerService::Note kPattern[] = {{3200, 40}};
     _svc.buzzer.play(kPattern, sizeof(kPattern) / sizeof(kPattern[0]));
     break;
   }
