@@ -83,7 +83,7 @@ inline constexpr uint8_t I2C_ADDR_CAP1203 = 0x28; // Capacitive touch
 // PM sensor power enable (SPS30, I2C)
 // ---------------------------------------------------------------------------
 
-inline constexpr gpio_num_t PIN_PM_POWER = GPIO_NUM_26;
+inline constexpr gpio_num_t PIN_PM_POWER = GPIO_NUM_26; // v0.3: active-low
 
 // ---------------------------------------------------------------------------
 // Physical buttons
@@ -97,7 +97,7 @@ inline constexpr gpio_num_t PIN_BUTTON_POWER = GPIO_NUM_5; // QON, active-low
 // ---------------------------------------------------------------------------
 
 inline constexpr gpio_num_t PIN_CAP_INT = GPIO_NUM_1; // active-low
-inline constexpr uint8_t TOUCH_DELTA_SENSE = 0;       // 0-7, 0 = 128x max sensitivity
+inline constexpr uint8_t TOUCH_DELTA_SENSE = 1;       // 0-7, 1 = 64x sensitivity
 
 // ---------------------------------------------------------------------------
 // External watchdog (GPIO pulse)

@@ -720,7 +720,7 @@ TEST_CASE("set_pm_power: GPIO control for PM sensor power", "[PowerService][pm_s
   gpio::Hal tracking_gpio = test_gpio_hal;
   tracking_gpio.set_level = tracking_set_level;
 
-  SECTION("pin configured — set_pm_power(true) drives HIGH") {
+  SECTION("pin configured — set_pm_power(true) drives LOW (active-low EN_PM, v0.3)") {
     PowerService::Config config = DEFAULT_CONFIG;
     config.pin_pm_power = 26;
     PowerService svc(mock_bms, tracking_gpio, config);
@@ -729,10 +729,10 @@ TEST_CASE("set_pm_power: GPIO control for PM sensor power", "[PowerService][pm_s
     last_level = -1;
     svc.set_pm_power(true);
     CHECK(last_pin == 26);
-    CHECK(last_level == 1);
+    CHECK(last_level == 0);
   }
 
-  SECTION("pin configured — set_pm_power(false) drives LOW") {
+  SECTION("pin configured — set_pm_power(false) drives HIGH (active-low EN_PM, v0.3)") {
     PowerService::Config config = DEFAULT_CONFIG;
     config.pin_pm_power = 26;
     PowerService svc(mock_bms, tracking_gpio, config);
@@ -741,7 +741,7 @@ TEST_CASE("set_pm_power: GPIO control for PM sensor power", "[PowerService][pm_s
     last_level = -1;
     svc.set_pm_power(false);
     CHECK(last_pin == 26);
-    CHECK(last_level == 0);
+    CHECK(last_level == 1);
   }
 
   SECTION("pin disabled (-1) — set_pm_power is no-op") {

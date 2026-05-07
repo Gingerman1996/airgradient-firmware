@@ -66,7 +66,7 @@ threshold:
 | `pin_ext_wdt` | `int` | `-1` | External watchdog GPIO (`-1` = disabled); pulsed HIGH 20 ms on reset |
 | `deep_sleep_threshold_ms` | `int` | `5000` | Minimum sleep duration (ms) to bother entering deep sleep; shorter intervals stay awake. AGo sets this to `5000` |
 | `pin_pm_power` | `int` | `-1` | PM sensor power-enable GPIO (`-1` = no GPIO hold during sleep) |
-| `sensor_hold_max_sleep_ms` | `uint32_t` | `20000` | Maximum sleep duration (ms) for which the PM sensor power GPIO is held HIGH during deep sleep. Above this threshold the sensor powers off normally |
+| `sensor_hold_max_sleep_ms` | `uint32_t` | `20000` | Maximum sleep duration (ms) for which the PM sensor power GPIO is latched at the on-level during deep sleep (LOW for v0.3 active-low EN_PM). Above this threshold the sensor powers off normally |
 | `pm_sleep_threshold_ms` | `uint32_t` | `20000` | Minimum measurement interval (ms) to power-cycle the PM sensor between measurements in non-Offline modes. Accounts for ~10 s warmup plus minimum off-time |
 
 ## Sleep Type Selection
@@ -111,7 +111,8 @@ The caller must set `RtcAppState::sensors_warm` via
 ## PM Sensor Warm-Hold
 
 For short deep sleeps (< `sensor_hold_max_sleep_ms`, default 20 s) the SPS30
-power-enable GPIO is held HIGH during sleep via `gpio_hold_en()`. On ESP32-C5,
+power-enable GPIO (active-low on v0.3) is latched at LOW during sleep via
+`gpio_hold_en()`. On ESP32-C5,
 per-pin hold persists through deep sleep automatically, so no global
 `gpio_deep_sleep_hold_en()` call is needed. The fan keeps spinning and the
 sensor stays in measurement mode.

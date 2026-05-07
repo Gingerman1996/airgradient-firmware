@@ -192,8 +192,9 @@ public:
   /// Pure logic — no platform dependencies; testable on host.
   bool should_sleep_pm_sensor(uint32_t measure_interval_ms) const;
 
-  /// Control PM sensor power GPIO.  Sets the pin HIGH (on=true) or LOW
-  /// (on=false).  No-op when `Config::pin_pm_power < 0`.
+  /// Control PM sensor power GPIO.  EN_PM is active-low on v0.3 hardware:
+  /// drives the pin LOW (on=true) or HIGH (on=false).  No-op when
+  /// `Config::pin_pm_power < 0`.
   void set_pm_power(bool on);
 
   /// Enter deep sleep.  Does not return — CPU reboots on wake.
@@ -202,7 +203,8 @@ public:
   /// esp_deep_sleep_start().  Only call when decide_sleep() returns Deep.
   ///
   /// When `should_hold_pm_sensor(sleep_duration_ms)` is true, the PM power
-  /// GPIO is held HIGH during deep sleep via `gpio_hold_en()`.  On ESP32-C5
+  /// GPIO is latched at its current level during deep sleep via
+  /// `gpio_hold_en()` (active-low LOW = on for v0.3).  On ESP32-C5
   /// per-pin hold automatically persists through deep sleep.  The caller
   /// must set `RtcAppState::sensors_warm`
   /// accordingly before calling `save_state()`.

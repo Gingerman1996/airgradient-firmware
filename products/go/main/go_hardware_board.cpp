@@ -109,7 +109,7 @@ void GoHardwareBoard::init_buses() {
   hal.configure(PIN_PM_POWER, gpio::Mode::Output, gpio::PullMode::Floating,
                 gpio::InterruptType::Disabled);
   gpio_set_drive_capability(PIN_PM_POWER, GPIO_DRIVE_CAP_3);
-  hal.set_level(PIN_PM_POWER, 1);
+  hal.set_level(PIN_PM_POWER, 0);
 
   RTOS::delay_ms(100);
 
