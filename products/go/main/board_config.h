@@ -105,4 +105,11 @@ inline constexpr uint8_t TOUCH_DELTA_SENSE = 1;       // 0-7, 1 = 64x sensitivit
 
 inline constexpr gpio_num_t PIN_EXT_WDT = GPIO_NUM_2;
 
+// ---------------------------------------------------------------------------
+// Buzzer (HYG-8503A magnetic transducer, driven through Q3 NPN low-side)
+// ---------------------------------------------------------------------------
+
+inline constexpr gpio_num_t PIN_BUZZER = GPIO_NUM_8;  // v0.3: BUZZ → Q3 base, active-high
+inline constexpr uint32_t BUZZER_FREQ_HZ = 2700;      // HYG-8503A resonant frequency
+
 #endif // BOARD_CONFIG_H

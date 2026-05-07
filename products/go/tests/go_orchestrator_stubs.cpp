@@ -12,6 +12,7 @@
  */
 
 #include "go_ble.h"
+#include "go_buzzer.h"
 #include "go_display.h"
 #include "gps/gps_service.h"
 #include "go_input.h"
@@ -110,6 +111,10 @@ PowerService::SleepType sleep_type_to_return = PowerService::SleepType::None;
 bool pm_power_set = false;
 bool pm_power_on = false;
 
+// --- BuzzerService ---
+bool buzzer_played = false;
+size_t buzzer_last_note_count = 0;
+
 void reset() {
   sensor_started = false;
   sensor_stopped = false;
@@ -181,6 +186,9 @@ void reset() {
   sleep_type_to_return = PowerService::SleepType::None;
   pm_power_set = false;
   pm_power_on = false;
+
+  buzzer_played = false;
+  buzzer_last_note_count = 0;
 
   DisplayService::spy_deep_sleep_called = false;
   DisplayService::spy_update_count = 0;
@@ -268,6 +276,27 @@ bool InputService::start() {
 }
 
 void InputService::stop() { test_spy::input_stopped = true; }
+
+// ============================================================================
+// BuzzerService stubs
+// ============================================================================
+
+BuzzerService::BuzzerService(const Config &config) : _config(config) {}
+BuzzerService::~BuzzerService() = default;
+bool BuzzerService::init() { return true; }
+bool BuzzerService::start() { return true; }
+void BuzzerService::play(const Note * /*notes*/, size_t count) {
+  test_spy::buzzer_played = true;
+  test_spy::buzzer_last_note_count = count;
+}
+void BuzzerService::beep(uint32_t /*duration_ms*/) {
+  test_spy::buzzer_played = true;
+  test_spy::buzzer_last_note_count = 1;
+}
+void BuzzerService::stop() {}
+void BuzzerService::_task_entry(void * /*arg*/) {}
+void BuzzerService::_run() {}
+void BuzzerService::_set_freq(uint32_t /*freq_hz*/) {}
 
 // ============================================================================
 // StorageService stubs

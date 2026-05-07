@@ -9,6 +9,7 @@
  */
 
 #include "go_ble.h"
+#include "go_buzzer.h"
 #include "go_display.h"
 #include "go_input.h"
 #include "go_orchestrator.h"
@@ -221,6 +222,21 @@ bool InputService::start() {
 }
 
 void InputService::stop() { test_spy::input_stopped = true; }
+
+// ============================================================================
+// BuzzerService stubs
+// ============================================================================
+
+BuzzerService::BuzzerService(const Config &config) : _config(config) {}
+BuzzerService::~BuzzerService() = default;
+bool BuzzerService::init() { return true; }
+bool BuzzerService::start() { return true; }
+void BuzzerService::play(const Note * /*notes*/, size_t /*count*/) {}
+void BuzzerService::beep(uint32_t /*duration_ms*/) {}
+void BuzzerService::stop() {}
+void BuzzerService::_task_entry(void * /*arg*/) {}
+void BuzzerService::_run() {}
+void BuzzerService::_set_freq(uint32_t /*freq_hz*/) {}
 
 // ============================================================================
 // StorageService stubs

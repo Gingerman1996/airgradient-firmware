@@ -3,6 +3,7 @@ idf_component_register(
          "go_app.cpp"
          "go_hardware_board.cpp"
          "go_ble.cpp"
+         "go_buzzer.cpp"
          "go_types.cpp"
          "go_settings.cpp"
          "go_display.cpp"
@@ -30,6 +31,7 @@ idf_component_register(
              airgradient-touch
              esp_driver_gpio
              esp_driver_i2c
+             esp_driver_ledc
              esp_driver_spi
              nvs_flash
              u8g2

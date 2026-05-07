@@ -27,6 +27,7 @@ enum esp_reset_reason_t { ESP_RST_UNKNOWN = 0 };
 inline esp_reset_reason_t esp_reset_reason() { return ESP_RST_UNKNOWN; }
 #endif
 #include "go_ble.h"
+#include "go_buzzer.h"
 #include "go_events.h"
 #include "go_input.h"
 #include "go_orchestrator.h"
@@ -406,6 +407,14 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
   // BleService construction requires StorageService
   auto *ble_service = new BleService(event_queue, stor);
 
+  auto *buzzer = new BuzzerService({
+      .pin = PIN_BUZZER,
+      .default_freq_hz = BUZZER_FREQ_HZ,
+      .duty_percent = 50,
+  });
+  buzzer->init();
+  buzzer->start();
+
   // -----------------------------------------------------------------------
   // Phase 4: Orchestrator — display + all services ready
   // -----------------------------------------------------------------------
@@ -419,6 +428,7 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
       .power_service = pwr,
       .ui_manager = *ui_manager,
       .ble_service = *ble_service,
+      .buzzer = *buzzer,
   };
 
   auto *orchestrator =
@@ -517,6 +527,23 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
   }
   input_service->start();
 
+  // --- Buzzer ---
+  auto *buzzer = new BuzzerService({
+      .pin = PIN_BUZZER,
+      .default_freq_hz = BUZZER_FREQ_HZ,
+      .duty_percent = 50,
+  });
+  buzzer->init();
+  buzzer->start();
+
+  // Boot melody (fresh power-on only — wake-from-sleep stays silent)
+  if (cause == WakeCause::PowerOn) {
+    static constexpr BuzzerService::Note kBootMelody[] = {
+        {2400, 80}, {0, 30}, {2700, 80}, {0, 30}, {3200, 120},
+    };
+    buzzer->play(kBootMelody, sizeof(kBootMelody) / sizeof(kBootMelody[0]));
+  }
+
   // --- Orchestrator ---
   Orchestrator::Services services = {
       .sensor_producer = *sensor_producer,
@@ -527,6 +554,7 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
       .power_service = pwr,
       .ui_manager = *ui_manager,
       .ble_service = *ble_service,
+      .buzzer = *buzzer,
   };
 
   auto *orchestrator =
