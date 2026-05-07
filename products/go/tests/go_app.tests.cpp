@@ -232,6 +232,10 @@ public:
     call_log.push_back("new_touch_sensor");
     return &_touch;
   }
+  LP5036 *new_led_driver() override {
+    call_log.push_back("new_led_driver");
+    return reinterpret_cast<LP5036 *>(&_led_driver_buf);
+  }
 
   std::string serial_number() override { return "test-serial"; }
   const char *firmware_version() override { return "0.0.0-test"; }
@@ -281,6 +285,7 @@ private:
   alignas(NandStorage) static inline char s_nand_buf[sizeof(NandStorage)];
   alignas(8) static inline char _config_store_buf[64];
   alignas(8) static inline char _gps_driver_buf[512];
+  alignas(8) static inline char _led_driver_buf[256];
 
   StorageService _storage{*reinterpret_cast<PayloadCache *>(s_cache_buf),
                           *reinterpret_cast<NandStorage *>(s_nand_buf)};

@@ -16,6 +16,7 @@
 #include "config_store.h"
 #include "go_ble.h"
 #include "go_buzzer.h"
+#include "go_led.h"
 #include "go_ulp.h"
 #include "go_display.h"
 #include "go_events.h"
@@ -45,6 +46,7 @@ public:
     UIManager &ui_manager;
     BleService &ble_service;
     BuzzerService &buzzer;
+    LedService &led;
   };
 
   /// Construct the orchestrator.

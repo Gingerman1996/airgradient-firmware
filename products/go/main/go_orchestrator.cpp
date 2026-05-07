@@ -558,6 +558,21 @@ void Orchestrator::on_input(const InputEventData &input) {
     return;
   }
 
+  // Unlocked: white LED flash on accepted touch — 30 % brightness for 100 ms
+  switch (input.source) {
+  case InputSource::TouchDown:
+    _svc.led.flash_white(LedService::Led::Right, 76, 100);
+    break;
+  case InputSource::TouchUp:
+    _svc.led.flash_white(LedService::Led::Left, 76, 100);
+    break;
+  case InputSource::TouchEnter:
+    _svc.led.flash_white(LedService::Led::Select, 76, 100);
+    break;
+  default:
+    break;
+  }
+
   // Unlocked: forward to UI Manager
   UIActionResult result = _svc.ui_manager.handle_input(input.source, input.type);
 

@@ -32,6 +32,7 @@
 #include "drivers/sgp41/sgp41.h"
 #include "drivers/sps30/sps30.h"
 #include "drivers/stcc4/stcc4.h"
+#include "go_led.h"
 #include "gps/gps_driver.h"
 #include "native_gpio.h"
 #include "nvs_config_store.h"
@@ -317,6 +318,17 @@ CapTouchSensor *GoHardwareBoard::new_touch_sensor() {
     AG_LOGE(TAG, "CAP1203 touch init failed");
   }
   return touch;
+}
+
+LP5036 *GoHardwareBoard::new_led_driver() {
+  assert(_buses_ready && "new_led_driver() requires init_buses()");
+  LP5036::Config cfg;
+  cfg.address = I2C_ADDR_LP5036;
+  auto *led = new LP5036(_i2c_bus, cfg);
+  if (!led->init()) {
+    AG_LOGE(TAG, "LP5036 LED driver init failed");
+  }
+  return led;
 }
 
 // ===========================================================================

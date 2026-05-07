@@ -33,6 +33,7 @@ public:
   // --- Per-call factories ---
   GpsDriver *new_gps_driver() override;
   CapTouchSensor *new_touch_sensor() override;
+  LP5036 *new_led_driver() override;
 
   // --- Platform ---
   std::string serial_number() override;

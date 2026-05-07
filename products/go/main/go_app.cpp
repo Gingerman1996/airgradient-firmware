@@ -21,6 +21,8 @@
 inline constexpr int PIN_BUTTON_POWER = 5;
 inline constexpr int PIN_BUTTON_BOOT = 28;
 inline constexpr int PIN_CAP_INT = 1;
+inline constexpr int PIN_BUZZER = 8;
+inline constexpr uint32_t BUZZER_FREQ_HZ = 2700;
 inline constexpr int GPS_BAUD = 115200;
 // Stub esp_reset_reason for host builds.
 enum esp_reset_reason_t { ESP_RST_UNKNOWN = 0 };
@@ -30,6 +32,7 @@ inline esp_reset_reason_t esp_reset_reason() { return ESP_RST_UNKNOWN; }
 #include "go_buzzer.h"
 #include "go_events.h"
 #include "go_input.h"
+#include "go_led.h"
 #include "go_orchestrator.h"
 #include "go_power.h"
 #include "go_sensor_producer.h"
@@ -415,6 +418,11 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
   buzzer->init();
   buzzer->start();
 
+  auto *led_driver = _board.new_led_driver();
+  auto *led = new LedService({.driver = led_driver});
+  led->init();
+  led->start();
+
   // -----------------------------------------------------------------------
   // Phase 4: Orchestrator — display + all services ready
   // -----------------------------------------------------------------------
@@ -429,6 +437,7 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
       .ui_manager = *ui_manager,
       .ble_service = *ble_service,
       .buzzer = *buzzer,
+      .led = *led,
   };
 
   auto *orchestrator =
@@ -544,6 +553,18 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
     buzzer->play(kBootMelody, sizeof(kBootMelody) / sizeof(kBootMelody[0]));
   }
 
+  auto *led_driver = _board.new_led_driver();
+  auto *led = new LedService({.driver = led_driver});
+  led->init();
+  led->start();
+
+  // Boot self-test: brief white flash on all three touch LEDs
+  if (cause == WakeCause::PowerOn) {
+    led->flash_white(LedService::Led::Select, 76, 200);
+    led->flash_white(LedService::Led::Left, 76, 200);
+    led->flash_white(LedService::Led::Right, 76, 200);
+  }
+
   // --- Orchestrator ---
   Orchestrator::Services services = {
       .sensor_producer = *sensor_producer,
@@ -555,6 +576,7 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
       .ui_manager = *ui_manager,
       .ble_service = *ble_service,
       .buzzer = *buzzer,
+      .led = *led,
   };
 
   auto *orchestrator =

@@ -289,6 +289,7 @@ struct TestFixture {
   UIManager ui_manager;
   BleService ble_service;
   BuzzerService buzzer;
+  LedService led;
 
   // MockRTOS + MockConfigStore
   MockRTOS mock_rtos;
@@ -310,10 +311,10 @@ struct TestFixture {
         display_service(DisplayService::Config{}), storage_service(payload_cache, stub_nand),
         power_service(stub_bms, test_gpio_hal, PowerService::Config{}),
         ui_manager(UIManager::Config{}), ble_service(nullptr, storage_service),
-        buzzer(BuzzerService::Config{}),
+        buzzer(BuzzerService::Config{}), led(LedService::Config{}),
         services{sensor_producer, gps_service,   input_service, display_service,
                  storage_service, power_service, ui_manager,    ble_service,
-                 buzzer} {
+                 buzzer,          led} {
     test_spy::reset();
     RTOS::set_instance(&mock_rtos);
     _exp_time = NAMED_ALLOW_CALL(mock_rtos, get_time_ms_impl()).RETURN(0);
@@ -2567,6 +2568,7 @@ struct PmSleepFixture {
   UIManager ui_manager;
   BleService ble_service;
   BuzzerService buzzer;
+  LedService led;
 
   MockRTOS mock_rtos;
   MockConfigStore mock_config;
@@ -2596,10 +2598,10 @@ struct PmSleepFixture {
                           .pm_sleep_threshold_ms = 20000,
                       }),
         ui_manager(UIManager::Config{}), ble_service(nullptr, storage_service),
-        buzzer(BuzzerService::Config{}),
+        buzzer(BuzzerService::Config{}), led(LedService::Config{}),
         services{sensor_producer, gps_service,   input_service, display_service,
                  storage_service, power_service, ui_manager,    ble_service,
-                 buzzer} {
+                 buzzer,          led} {
     test_spy::reset();
     RTOS::set_instance(&mock_rtos);
     settings.operating_mode = OperatingMode::Portable;

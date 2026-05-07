@@ -11,6 +11,7 @@
 #include "go_ble.h"
 #include "go_buzzer.h"
 #include "go_display.h"
+#include "go_led.h"
 #include "go_input.h"
 #include "go_orchestrator.h"
 #include "go_power.h"
@@ -237,6 +238,34 @@ void BuzzerService::stop() {}
 void BuzzerService::_task_entry(void * /*arg*/) {}
 void BuzzerService::_run() {}
 void BuzzerService::_set_freq(uint32_t /*freq_hz*/) {}
+
+// ============================================================================
+// LP5036 + LedService stubs
+// ============================================================================
+
+LP5036::LP5036(LedI2cBusHandle bus, const Config &config) : _config(config), _bus(bus) {}
+LP5036::~LP5036() = default;
+bool LP5036::init() { return true; }
+bool LP5036::set_channel(uint8_t /*channel*/, uint8_t /*value*/) { return true; }
+bool LP5036::set_rgb(uint8_t /*b_channel*/, uint8_t /*r*/, uint8_t /*g*/, uint8_t /*b*/) {
+  return true;
+}
+bool LP5036::_write_reg(uint8_t /*reg*/, uint8_t /*value*/) { return true; }
+bool LP5036::_write_block(uint8_t /*reg*/, const uint8_t * /*data*/, size_t /*len*/) {
+  return true;
+}
+
+LedService::LedService(const Config &config) : _config(config) {}
+LedService::~LedService() = default;
+bool LedService::init() { return true; }
+bool LedService::start() { return true; }
+void LedService::flash_white(Led /*led*/, uint8_t /*value*/, uint32_t /*duration_ms*/) {}
+void LedService::off(Led /*led*/) {}
+void LedService::all_off() {}
+void LedService::_task_entry(void * /*arg*/) {}
+void LedService::_run() {}
+void LedService::_map(Led /*led*/, uint8_t & /*b_ch*/, uint8_t & /*g_ch*/, uint8_t & /*r_ch*/) {}
+void LedService::_set_led_rgb(Led /*led*/, uint8_t /*r*/, uint8_t /*g*/, uint8_t /*b*/) {}
 
 // ============================================================================
 // StorageService stubs

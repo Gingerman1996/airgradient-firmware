@@ -9,6 +9,7 @@
 // Forward declarations — avoid pulling full headers into the interface.
 class BmsDevice;
 class CapTouchSensor;
+class LP5036;
 class ConfigStore;
 class DisplayService;
 class GpsDriver;
@@ -69,6 +70,7 @@ struct GoBoard {
 
   virtual GpsDriver *new_gps_driver() = 0;
   virtual CapTouchSensor *new_touch_sensor() = 0;
+  virtual LP5036 *new_led_driver() = 0;
 
   // -----------------------------------------------------------------
   // Platform info

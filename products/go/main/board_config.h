@@ -77,6 +77,7 @@ inline constexpr uint8_t I2C_ADDR_SGP41 = 0x59;   // TVOC & NOx
 inline constexpr uint8_t I2C_ADDR_DPS368 = 0x77;  // Pressure + altitude
 inline constexpr uint8_t I2C_ADDR_BMS = 0x6A;     // BQ25629 battery charger
 inline constexpr uint8_t I2C_ADDR_CAP1203 = 0x28; // Capacitive touch
+inline constexpr uint8_t I2C_ADDR_LP5036 = 0x33;  // RGB LED driver (mobile_display, ADDR0=ADDR1=1)
 // SPS30 PM sensor uses a fixed address (0x69) defined in the driver.
 
 // ---------------------------------------------------------------------------
