@@ -115,7 +115,10 @@ private:
 
   // --- Constants ---
   static constexpr uint32_t BMS_POLL_INTERVAL_MS = 60000;
-  static constexpr uint32_t BMS_STATUS_POLL_INTERVAL_MS = 5000;
+  // 1 Hz so PMID mode (Boost/PassThrough) re-syncs within ~1 s of a USB plug
+  // event. EN_OTG is dropped on PassThrough entry, so a slower cadence leaves
+  // the PM sensor's +5V rail dead for the polling window after USB removal.
+  static constexpr uint32_t BMS_STATUS_POLL_INTERVAL_MS = 1000;
   static constexpr uint32_t EXT_WDT_INTERVAL_MS = 60000;
   static constexpr uint32_t MAX_REASONABLE_TIMEOUT_MS = 3600000;
   static constexpr uint32_t BLE_COMMAND_RESULT_DELAY_MS = 200;

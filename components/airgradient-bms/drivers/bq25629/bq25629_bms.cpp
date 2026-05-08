@@ -316,6 +316,36 @@ bool BQ25629Bms::configure_pmid_mode(BmsPmidMode mode) {
   // Wait for PMID rails stable
   RTOS::delay_ms(300);
 
+  // Verify the chip actually honored the request.  EN_OTG can be cleared
+  // autonomously by the IC on BAT_OTGZ, OTG hiccup, TS-out-of-window, etc.
+  // (datasheet §8.3.10.3 / §8.3.10.4) — the register cache cannot be trusted
+  // as authoritative.  Read the truth out of the chip and log it so the
+  // failure mode is visible when boost OTG silently refuses to enter.
+  uint8_t ctrl2 = 0;
+  uint8_t status1 = 0;
+  uint8_t fault0 = 0;
+  drivers::BQ25629_ADC_Data post_adc{};
+  const bool have_ctrl2 = _charger.read_register(0x18, ctrl2) == ESP_OK;
+  const bool have_status1 = _charger.read_register(0x1E, status1) == ESP_OK;
+  const bool have_fault0 = _charger.read_register(0x1F, fault0) == ESP_OK;
+  const bool have_adc = _charger.read_adc(post_adc) == ESP_OK;
+  const bool en_otg_bit = have_ctrl2 && (ctrl2 & (1 << 6));
+  const bool en_bypass_bit = have_ctrl2 && (ctrl2 & (1 << 7));
+  const uint8_t vbus_stat = have_status1 ? (status1 & 0x07) : 0xFF;
+  ESP_LOGI(TAG,
+           "post-OTG verify: ctrl2=0x%02x (EN_OTG=%d EN_BYPASS=%d) vbus_stat=0x%x "
+           "fault0=0x%02x vpmid=%umV vbat=%umV",
+           ctrl2, en_otg_bit, en_bypass_bit, vbus_stat, fault0,
+           have_adc ? post_adc.vpmid_mv : 0, have_adc ? post_adc.vbat_mv : 0);
+
+  if (otg_enable && !en_otg_bit) {
+    // Chip dropped EN_OTG on us — boost OTG entry was refused or aborted.
+    // Do NOT cache the requested mode; leave _pmid_mode unchanged so the
+    // next sync_pmid_mode() poll re-attempts the configuration.
+    ESP_LOGW(TAG, "boost OTG refused by chip (EN_OTG=0 after enable). fault0=0x%02x", fault0);
+    return false;
+  }
+
   _pmid_mode = mode;
   ESP_LOGI(TAG, "PMID mode set to %s", bms_pmid_mode_str(mode));
   return true;
