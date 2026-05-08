@@ -33,31 +33,51 @@ bool BQ25629Bms::init() {
     return false;
   }
 
-  // Extend watchdog to 200s so periodic resets have ample margin.
+  // Watchdog disabled so the chip never auto-clears EN_OTG behind our back.
   err = _charger.set_watchdog_timeout(drivers::WatchdogTimeout::Disable);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "set_watchdog_timeout failed: %s", esp_err_to_name(err));
     return false;
   }
 
+  // Configure OTG once. After this point the chip handles buck↔boost
+  // transitions autonomously based on its own VBUS-detect:
+  //   VBUS present → buck (charging from VBUS, EN_OTG masked internally)
+  //   VBUS absent  → boost (PMID = 5 V from VBAT)
+  // We never write EN_OTG again.
+  //
+  // The chip has a silicon interlock that requires VBUS < VBAT + V_SLEEP
+  // (~45 mV typ; BQ25628 datasheet §8.3.6.1 condition #2) before the boost
+  // converter is allowed to start. With v0.3 hardware we saw VBUS float at
+  // ~VBAT after USB unplug due to back-feed on the VBUS net — the chip
+  // stayed out of Sleep mode, the boost stayed gated, and PMID was pinned
+  // near VBAT until the battery was physically removed. v0.4 adds a 10 kΩ
+  // pulldown on VBUS to drain it within tens of ms after unplug so the
+  // chip's V_SLEEP comparator trips and OTG engages naturally.
+  //
+  // Software-driven mode transitions (REG_RST + EN_OTG toggling around the
+  // unplug event) were also observed to latch the chip into a state with
+  // vbus_stat=7 / en_otg=1 / no fault flags but vpmid stuck near vbat,
+  // recoverable only by VBAT removal — so the safest behavior is to leave
+  // EN_OTG armed and let the chip's autonomous logic handle transitions.
+  if (!_apply_otg_config()) {
+    ESP_LOGE(TAG, "apply_otg_config failed during init");
+    return false;
+  }
+
+  // Initial _pmid_mode reflects what the chip is doing right now, derived
+  // from VBUS_STAT. Used only for telemetry / orchestrator UI.
   drivers::VBusStatus raw_vbus_status{};
   err = _charger.get_vbus_status(raw_vbus_status);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "get_vbus_status failed during init: %s", esp_err_to_name(err));
     return false;
   }
-
   const BmsPowerSource power_source = map_vbus_status(raw_vbus_status);
-  const BmsPmidMode pmid_mode = bms_power_source_has_external_input(power_source)
-                                    ? BmsPmidMode::PassThrough
-                                    : BmsPmidMode::Boost;
+  _pmid_mode = bms_power_source_has_external_input(power_source) ? BmsPmidMode::PassThrough
+                                                                 : BmsPmidMode::Boost;
+  ESP_LOGI(TAG, "Initial PMID mode: %s", bms_pmid_mode_str(_pmid_mode));
 
-  if (!configure_pmid_mode(pmid_mode)) {
-    ESP_LOGE(TAG, "configure_pmid_mode(%s) failed during init", bms_pmid_mode_str(pmid_mode));
-    return false;
-  }
-
-  // Reset the watchdog timer after the full post-init sequence.
   err = _charger.reset_watchdog();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "reset_watchdog failed: %s", esp_err_to_name(err));
@@ -247,23 +267,24 @@ bool BQ25629Bms::configure_pmid_mode(BmsPmidMode mode) {
     return true;
   }
 
-  // --- Shared preamble (both modes) ---
-  //
-  // Each register write is followed by a 10 ms settling delay, matching the
-  // sequencing in BQ25629::enable_pmid_5v_boost().  Back-to-back writes
-  // without delays can leave the IC in a transient state when OTG boost is
-  // subsequently enabled, contributing to battery-side inrush brownout.
-  //
-  // 1. HIZ off    — required for any active PMID operation.
-  // 2. TS config  — ensure TS check state is defined before OTG enable.
-  // 3. VOTG 5 V   — target for the OTG boost converter (harmless when OTG is
-  //                  disabled, but keeps the register primed for a later switch).
-  // 4. Bypass off — EN_BYPASS_OTG connects battery directly to PMID without
-  //                 regulation.  Neither pass-through nor regulated boost
-  //                 wants that path enabled.
+  // No I²C writes here. The chip's own VBUS-detect drives the buck↔boost
+  // transition autonomously; EN_OTG was armed once in init() and stays at
+  // 1 forever. See init() for the full background on why we don't touch
+  // EN_OTG on plug/unplug events (silicon interlock + v0.4 board fix).
+  ESP_LOGI(TAG, "PMID mode -> %s (chip handles transition autonomously)",
+           bms_pmid_mode_str(mode));
+  _pmid_mode = mode;
+  return true;
+}
 
+// ---------------------------------------------------------------------------
+// One-shot OTG configuration (called once from init())
+// ---------------------------------------------------------------------------
+
+bool BQ25629Bms::_apply_otg_config() {
   static constexpr uint32_t STEP_DELAY_MS = 10;
 
+  // 1. HIZ off    — required for any active PMID operation.
   esp_err_t err = _charger.disable_hiz_mode();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "disable_hiz_mode failed: %s", esp_err_to_name(err));
@@ -271,12 +292,14 @@ bool BQ25629Bms::configure_pmid_mode(BmsPmidMode mode) {
   }
   RTOS::delay_ms(STEP_DELAY_MS);
 
+  // 2. TS check on — define TS state before EN_OTG.
   err = _charger.set_ts_ignore(false);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "set_ts_ignore failed: %s (continuing)", esp_err_to_name(err));
   }
   RTOS::delay_ms(STEP_DELAY_MS);
 
+  // 3. VOTG = 5.1 V — boost target (effective whenever boost engages).
   err = _charger.set_votg_voltage(5100);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "set_votg_voltage failed: %s", esp_err_to_name(err));
@@ -284,6 +307,7 @@ bool BQ25629Bms::configure_pmid_mode(BmsPmidMode mode) {
   }
   RTOS::delay_ms(STEP_DELAY_MS);
 
+  // 4. Bypass off — never want direct VBAT→PMID without regulation.
   err = _charger.enable_bypass_otg(false);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "enable_bypass_otg(false) failed: %s", esp_err_to_name(err));
@@ -291,62 +315,21 @@ bool BQ25629Bms::configure_pmid_mode(BmsPmidMode mode) {
   }
   RTOS::delay_ms(STEP_DELAY_MS);
 
-  // --- Mode-specific: only EN_OTG differs ---
-  //
-  // PassThrough — PMID is fed from external input; OTG boost is off.
-  // Boost       — OTG boost converts battery to regulated 5 V on PMID.
+  // 5. EN_OTG = 1 — armed once, stays at 1 forever. The chip masks it
+  //    internally while VBUS is detected and re-engages the boost when VBUS
+  //    drops, without any further register writes.
+  err = _charger.enable_otg(true);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "enable_otg(true) failed: %s", esp_err_to_name(err));
+    return false;
+  }
+  RTOS::delay_ms(STEP_DELAY_MS);
 
-  const bool otg_enable = (mode == BmsPmidMode::Boost);
-
-  // Log battery/system voltages before OTG toggle.  A weak battery may sag
-  // below the brownout threshold when the boost converter starts, causing a
-  // reboot loop
   drivers::BQ25629_ADC_Data adc{};
   if (_charger.read_adc(adc) == ESP_OK) {
-    ESP_LOGI(TAG, "pre-OTG ADC: vbat=%umV vsys=%umV vpmid=%umV vbus=%umV ibat=%dmA", adc.vbat_mv,
-             adc.vsys_mv, adc.vpmid_mv, adc.vbus_mv, adc.ibat_ma);
+    ESP_LOGI(TAG, "post-init OTG: vbat=%umV vsys=%umV vpmid=%umV vbus=%umV ibat=%dmA",
+             adc.vbat_mv, adc.vsys_mv, adc.vpmid_mv, adc.vbus_mv, adc.ibat_ma);
   }
 
-  err = _charger.enable_otg(otg_enable);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "enable_otg(%s) failed: %s", otg_enable ? "true" : "false", esp_err_to_name(err));
-    return false;
-  }
-
-  // Wait for PMID rails stable
-  RTOS::delay_ms(300);
-
-  // Verify the chip actually honored the request.  EN_OTG can be cleared
-  // autonomously by the IC on BAT_OTGZ, OTG hiccup, TS-out-of-window, etc.
-  // (datasheet §8.3.10.3 / §8.3.10.4) — the register cache cannot be trusted
-  // as authoritative.  Read the truth out of the chip and log it so the
-  // failure mode is visible when boost OTG silently refuses to enter.
-  uint8_t ctrl2 = 0;
-  uint8_t status1 = 0;
-  uint8_t fault0 = 0;
-  drivers::BQ25629_ADC_Data post_adc{};
-  const bool have_ctrl2 = _charger.read_register(0x18, ctrl2) == ESP_OK;
-  const bool have_status1 = _charger.read_register(0x1E, status1) == ESP_OK;
-  const bool have_fault0 = _charger.read_register(0x1F, fault0) == ESP_OK;
-  const bool have_adc = _charger.read_adc(post_adc) == ESP_OK;
-  const bool en_otg_bit = have_ctrl2 && (ctrl2 & (1 << 6));
-  const bool en_bypass_bit = have_ctrl2 && (ctrl2 & (1 << 7));
-  const uint8_t vbus_stat = have_status1 ? (status1 & 0x07) : 0xFF;
-  ESP_LOGI(TAG,
-           "post-OTG verify: ctrl2=0x%02x (EN_OTG=%d EN_BYPASS=%d) vbus_stat=0x%x "
-           "fault0=0x%02x vpmid=%umV vbat=%umV",
-           ctrl2, en_otg_bit, en_bypass_bit, vbus_stat, fault0,
-           have_adc ? post_adc.vpmid_mv : 0, have_adc ? post_adc.vbat_mv : 0);
-
-  if (otg_enable && !en_otg_bit) {
-    // Chip dropped EN_OTG on us — boost OTG entry was refused or aborted.
-    // Do NOT cache the requested mode; leave _pmid_mode unchanged so the
-    // next sync_pmid_mode() poll re-attempts the configuration.
-    ESP_LOGW(TAG, "boost OTG refused by chip (EN_OTG=0 after enable). fault0=0x%02x", fault0);
-    return false;
-  }
-
-  _pmid_mode = mode;
-  ESP_LOGI(TAG, "PMID mode set to %s", bms_pmid_mode_str(mode));
   return true;
 }

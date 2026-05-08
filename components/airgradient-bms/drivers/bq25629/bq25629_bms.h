@@ -49,6 +49,12 @@ public:
   bool configure_pmid_mode(BmsPmidMode mode) override;
 
 private:
+  /// One-shot OTG configuration applied during init():
+  /// HIZ off → TS check on → VOTG=5100 → EN_BYPASS_OTG=0 → EN_OTG=1.
+  /// After this the chip handles buck↔boost transitions autonomously based
+  /// on its own VBUS-detect; configure_pmid_mode() never writes EN_OTG.
+  bool _apply_otg_config();
+
   drivers::BQ25629 _charger;
   drivers::BQ25629_Config _config;
   BmsPmidMode _pmid_mode = BmsPmidMode::Unknown;
