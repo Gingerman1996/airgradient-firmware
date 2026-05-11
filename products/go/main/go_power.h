@@ -56,6 +56,8 @@ inline bool is_bms_charging(BmsChargingState state) {
 // PowerService
 // ---------------------------------------------------------------------------
 
+class BQ27427;
+
 class PowerService {
 public:
   // -------------------------------------------------------------------------
@@ -96,6 +98,11 @@ public:
   /// @param gpio    GPIO HAL function-pointer table.
   /// @param config  Runtime configuration (wake pins, sleep threshold).
   PowerService(BmsDevice &bms, const gpio::Hal &gpio, const Config &config);
+
+  /// Attach an optional BQ27427 fuel gauge.  When set, poll_bms() will
+  /// prefer the gauge's Impedance Track SOC over the BMS voltage-based
+  /// estimate.  Pass nullptr to detach.  Not owned.
+  void set_fuel_gauge(BQ27427 *fg) { _fuel_gauge = fg; }
 
   // -------------------------------------------------------------------------
   // BMS operations (called by orchestrator on timer)
@@ -248,6 +255,7 @@ private:
   BmsDevice &_bms;
   const gpio::Hal &_gpio;
   Config _config;
+  BQ27427 *_fuel_gauge = nullptr; ///< Optional fuel gauge — not owned.
   BmsPmidMode _pmid_mode = BmsPmidMode::Unknown;
 
   /// Configure timer and GPIO wake sources before entering sleep.

@@ -26,6 +26,7 @@
 #include "cap1203.h"
 #include "common.h"
 #include "drivers/bq25629/bq25629_bms.h"
+#include "drivers/bq27427/bq27427.h"
 #include "drivers/dps368/dps368.h"
 #include "drivers/s12/s12.h"
 #include "drivers/scd4x/scd4x.h"
@@ -173,6 +174,24 @@ void GoHardwareBoard::init_bms() {
   if (!_bms_driver->init()) {
     AG_LOGE(TAG, "BMS init failed");
   }
+
+  _fuel_gauge = new BQ27427(_i2c_bus, {.address = I2C_ADDR_FUEL_GAUGE});
+  if (_fuel_gauge->init()) {
+    uint8_t soc = 0;
+    uint16_t mv = 0;
+    int16_t ma = 0;
+    float tc = 0.0f;
+    const bool ok_soc = _fuel_gauge->read_soc_percent(soc);
+    const bool ok_v = _fuel_gauge->read_voltage_mv(mv);
+    const bool ok_i = _fuel_gauge->read_average_current_ma(ma);
+    const bool ok_t = _fuel_gauge->read_internal_temperature_c(tc);
+    AG_LOGI(TAG, "BQ27427 boot: soc=%s%u%% v=%s%umV i=%s%dmA t=%s%.1fC",
+            ok_soc ? "" : "?", soc, ok_v ? "" : "?", mv,
+            ok_i ? "" : "?", ma, ok_t ? "" : "?", tc);
+  } else {
+    AG_LOGW(TAG, "BQ27427 fuel gauge init failed");
+  }
+
   _bms_ready = true;
 }
 
@@ -302,6 +321,9 @@ PowerService &GoHardwareBoard::power() {
                                   .pin_pm_power = PIN_PM_POWER,
                                   .sensor_hold_max_sleep_ms = 20000,
                               });
+    if (_fuel_gauge != nullptr && _fuel_gauge->ready()) {
+      _power->set_fuel_gauge(_fuel_gauge);
+    }
     _power->init_ext_watchdog();
     _power->reset_ext_watchdog();
   }

@@ -34,6 +34,7 @@
 #include "esp_sleep.h"
 #endif
 
+#include "drivers/bq27427/bq27427.h"
 #include "go_power.h"
 
 #include <algorithm>
@@ -83,12 +84,24 @@ PowerSnapshot PowerService::poll_bms() {
     AG_LOGW(TAG, "poll_bms: read_telemetry() failed");
   }
 
+  // Prefer the fuel gauge's Impedance Track SOC when attached; otherwise
+  // fall back to the BMS voltage-based estimate.
   float pct = -1.0f;
-  if (_bms.get_battery_percentage(&pct)) {
+  bool soc_from_fg = false;
+  if (_fuel_gauge != nullptr) {
+    uint8_t fg_soc = 0;
+    if (_fuel_gauge->read_soc_percent(fg_soc)) {
+      pct = static_cast<float>(fg_soc);
+      soc_from_fg = true;
+    }
+  }
+  if (!soc_from_fg && !_bms.get_battery_percentage(&pct)) {
+    AG_LOGW(TAG, "poll_bms: get_battery_percentage() failed (fg=%s)",
+            _fuel_gauge ? "read_failed" : "absent");
+  }
+  if (pct >= 0.0f) {
     status.battery_percentage = pct;
-    status.critical = (pct >= 0.0f && pct < BATTERY_CRITICAL_PERCENT);
-  } else {
-    AG_LOGW(TAG, "poll_bms: get_battery_percentage() failed");
+    status.critical = (pct < BATTERY_CRITICAL_PERCENT);
   }
 
   BmsStatus bms_status{};
@@ -117,6 +130,28 @@ PowerSnapshot PowerService::poll_bms() {
   AG_LOGI(TAG, "poll_bms: ibus=%dmA ibat=%dmA vsys=%umV vpmid=%umV ts=%.1f%% tdie=%d°C",
           t.input_current_ma, t.battery_current_ma, t.system_voltage_mv, t.pmid_voltage_mv,
           t.ts_percent, t.die_temperature_c);
+
+  if (_fuel_gauge != nullptr) {
+    uint16_t fg_v_mv = 0;
+    int16_t fg_i_ma = 0;
+    int16_t fg_p_mw = 0;
+    uint16_t fg_rem_mah = 0;
+    uint16_t fg_fcc_mah = 0;
+    float fg_t_c = 0.0f;
+    const bool ok_v = _fuel_gauge->read_voltage_mv(fg_v_mv);
+    const bool ok_i = _fuel_gauge->read_average_current_ma(fg_i_ma);
+    const bool ok_p = _fuel_gauge->read_average_power_mw(fg_p_mw);
+    const bool ok_r = _fuel_gauge->read_remaining_capacity_mah(fg_rem_mah);
+    const bool ok_f = _fuel_gauge->read_full_charge_capacity_mah(fg_fcc_mah);
+    const bool ok_t = _fuel_gauge->read_internal_temperature_c(fg_t_c);
+    AG_LOGI(TAG,
+            "poll_bms: fg src=%s v=%s%umV i=%s%dmA p=%s%dmW rem=%s%umAh "
+            "fcc=%s%umAh t=%s%.1fC",
+            soc_from_fg ? "FG" : "BMS",
+            ok_v ? "" : "?", fg_v_mv, ok_i ? "" : "?", fg_i_ma,
+            ok_p ? "" : "?", fg_p_mw, ok_r ? "" : "?", fg_rem_mah,
+            ok_f ? "" : "?", fg_fcc_mah, ok_t ? "" : "?", fg_t_c);
+  }
 
   return status;
 }

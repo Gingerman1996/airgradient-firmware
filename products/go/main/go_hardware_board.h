@@ -6,6 +6,7 @@
 #include <driver/i2c_master.h>
 
 class BQ25629Bms;
+class BQ27427;
 class NvsConfigStore;
 
 /// Real hardware implementation of GoBoard for the AGo board.
@@ -60,6 +61,7 @@ private:
   GoSettings _settings{};
   bool _settings_loaded = false;
   BQ25629Bms *_bms_driver = nullptr;
+  BQ27427 *_fuel_gauge = nullptr;
   SensorManager *_sensor_manager = nullptr;
   StorageService *_storage = nullptr;
   DisplayService *_display = nullptr;
