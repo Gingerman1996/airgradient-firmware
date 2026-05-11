@@ -26,6 +26,9 @@ static constexpr uint8_t MODE_COUNT = 3;
 static const char *const AUTO_LOCK_OPTIONS[] = {"Off", "10 Seconds", "30 Seconds", "60 Seconds"};
 static constexpr uint8_t AUTO_LOCK_COUNT = 4;
 
+static const char *const LED_BRIGHTNESS_OPTIONS[] = {"Off", "25%", "50%", "75%", "100%"};
+static constexpr uint8_t LED_BRIGHTNESS_COUNT = 5;
+
 // Tag labels (indices 2..11 in the tag list screen)
 static const char *const TAG_LABELS[] = {
     "Traffic Emissions", "Road Dust",         "Construction Work", "Biomass Burning",
@@ -44,10 +47,11 @@ static constexpr uint8_t SETTING_MEASURE_INTERVAL = 4;
 static constexpr uint8_t SETTING_GPS_MODE = 5;
 static constexpr uint8_t SETTING_MODE = 6;
 static constexpr uint8_t SETTING_AUTO_LOCK = 7;
-static constexpr uint8_t SETTING_CO2_CALIBRATION = 8;
-static constexpr uint8_t SETTING_CLEAR_DATA = 9;
+static constexpr uint8_t SETTING_LED_BRIGHTNESS = 8;
+static constexpr uint8_t SETTING_CO2_CALIBRATION = 9;
+static constexpr uint8_t SETTING_CLEAR_DATA = 10;
 
-static constexpr uint8_t SETTINGS_TOTAL = 10;       // indices 0..9
+static constexpr uint8_t SETTINGS_TOTAL = 11;       // indices 0..10
 static constexpr uint8_t TAG_LIST_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t MAIN_MENU_TOTAL = 4;       // indices 0..3
 static constexpr uint8_t CONFIRM_TOTAL = 5;         // indices 0..4
@@ -317,6 +321,8 @@ void UIManager::sync_settings(const GoSettings &s) {
     _setting_auto_lock = 2;
   else
     _setting_auto_lock = 3;
+
+  _setting_led_brightness = (s.led_brightness < LED_BRIGHTNESS_COUNT) ? s.led_brightness : 4;
 }
 
 void UIManager::apply_to_settings(GoSettings &settings) const {
@@ -372,6 +378,10 @@ void UIManager::apply_to_settings(GoSettings &settings) const {
   // Auto-lock: index 0=Off(0s), 1=10s, 2=30s, 3=60s
   static constexpr int AUTO_LOCK_SECONDS[] = {0, 10, 30, 60};
   settings.auto_lock_seconds = (_setting_auto_lock < 4) ? AUTO_LOCK_SECONDS[_setting_auto_lock] : 0;
+
+  settings.led_brightness = (_setting_led_brightness < LED_BRIGHTNESS_COUNT)
+                                ? _setting_led_brightness
+                                : 4;
 }
 
 void UIManager::reset_to_home() {
@@ -518,6 +528,8 @@ uint8_t UIManager::setting_option_count(uint8_t setting_id) const {
     return MODE_COUNT;
   case SETTING_AUTO_LOCK:
     return AUTO_LOCK_COUNT;
+  case SETTING_LED_BRIGHTNESS:
+    return LED_BRIGHTNESS_COUNT;
   default:
     return 0;
   }
@@ -537,6 +549,8 @@ uint8_t UIManager::setting_current_option(uint8_t setting_id) const {
     return _setting_mode;
   case SETTING_AUTO_LOCK:
     return _setting_auto_lock;
+  case SETTING_LED_BRIGHTNESS:
+    return _setting_led_brightness;
   default:
     return 0;
   }
@@ -565,6 +579,9 @@ void UIManager::apply_setting_choice(uint8_t option_index) {
     break;
   case SETTING_AUTO_LOCK:
     _setting_auto_lock = option_index;
+    break;
+  case SETTING_LED_BRIGHTNESS:
+    _setting_led_brightness = option_index;
     break;
   default:
     break;
@@ -686,7 +703,7 @@ UIActionResult UIManager::dispatch_settings(InputSource source, InputType type) 
                _settings_index == SETTING_CLEAR_DATA) {
       // Open confirm dialog for action items
       open_confirm(_settings_index);
-    } else if (_settings_index >= SETTING_UNITS && _settings_index <= SETTING_AUTO_LOCK) {
+    } else if (_settings_index >= SETTING_UNITS && _settings_index <= SETTING_LED_BRIGHTNESS) {
       // Open choice screen for this setting
       open_settings_choice(_settings_index);
     }
@@ -905,6 +922,10 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
     case SETTING_AUTO_LOCK:
       (void)snprintf(label, sizeof(label), "Auto Lock: %s", AUTO_LOCK_OPTIONS[_setting_auto_lock]);
       break;
+    case SETTING_LED_BRIGHTNESS:
+      (void)snprintf(label, sizeof(label), "LED Brightness: %s",
+                     LED_BRIGHTNESS_OPTIONS[_setting_led_brightness]);
+      break;
     case SETTING_CO2_CALIBRATION:
       (void)snprintf(label, sizeof(label), "CO2: Calibrate");
       break;
@@ -950,6 +971,9 @@ void UIManager::populate_settings_choice_rows(DisplayValues &v) const {
     break;
   case SETTING_AUTO_LOCK:
     options = AUTO_LOCK_OPTIONS;
+    break;
+  case SETTING_LED_BRIGHTNESS:
+    options = LED_BRIGHTNESS_OPTIONS;
     break;
   default:
     break;

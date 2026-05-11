@@ -121,6 +121,11 @@ public:
   /// Turn all 36 channels off.
   void all_off();
 
+  /// Set brightness of indicator LEDs LED25 (OUT30) and LED26 (OUT31).
+  /// `pwm` is 0–255 (0 = off, 255 = full).  Bypasses the worker queue —
+  /// safe because the worker only writes to channels 0–2, 3–5, 27–29.
+  void set_indicator_brightness(uint8_t pwm);
+
   bool ready() const { return _config.driver != nullptr && _queue != nullptr; }
 
 private:

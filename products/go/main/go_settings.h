@@ -23,6 +23,10 @@ struct GoSettings {
   int inactivity_timeout_seconds = 5;
   int auto_lock_seconds = 0; // 0 = auto-lock disabled
 
+  // --- Indicator LEDs (LED25, LED26 on mobile_display via LP5036 OUT30/31) ---
+  // 0=Off, 1=25%, 2=50%, 3=75%, 4=100%
+  uint8_t led_brightness = 4;
+
   // --- Identity ---
   std::string device_name = "airgradient-go";
 };

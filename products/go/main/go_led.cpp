@@ -197,6 +197,14 @@ void LedService::off(Led led) {
   RTOS::queue_send(_queue, &c, QUEUE_TIMEOUT_MS);
 }
 
+void LedService::set_indicator_brightness(uint8_t pwm) {
+  if (_config.driver == nullptr) {
+    return;
+  }
+  _config.driver->set_channel(30, pwm);
+  _config.driver->set_channel(31, pwm);
+}
+
 void LedService::all_off() {
   if (!ready()) {
     return;

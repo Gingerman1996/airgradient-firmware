@@ -137,6 +137,7 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
 
   // --- Common tail ---
   _svc.ui_manager.sync_settings(_settings);
+  apply_led_brightness();
 
   if (!handoff.measurement_completed) {
     _svc.sensor_producer.request_measurement(1, SensorGroup::All);
@@ -704,6 +705,7 @@ void Orchestrator::apply_settings_change() {
   // Propagate runtime changes to services
   reschedule_sensor_timer(previous_settings);
   _svc.gps_service.set_posting_interval_ms(_settings.gps_interval_seconds * 1000);
+  apply_led_brightness();
 
   const bool is_gps_active_now = is_gps_active();
   if (!was_gps_active && is_gps_active_now) {
@@ -719,6 +721,13 @@ void Orchestrator::apply_settings_change() {
     _svc.ble_service.notify_config(_settings);
     _svc.ble_service.update_config(_settings);
   }
+}
+
+void Orchestrator::apply_led_brightness() {
+  // 0=Off, 1=25%, 2=50%, 3=75%, 4=100%
+  static constexpr uint8_t PWM_MAP[5] = {0, 64, 128, 191, 255};
+  const uint8_t idx = (_settings.led_brightness < 5) ? _settings.led_brightness : 4;
+  _svc.led.set_indicator_brightness(PWM_MAP[idx]);
 }
 
 bool Orchestrator::clear_data() {

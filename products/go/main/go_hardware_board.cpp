@@ -30,6 +30,7 @@
 #include "drivers/s12/s12.h"
 #include "drivers/scd4x/scd4x.h"
 #include "drivers/sgp41/sgp41.h"
+#include "drivers/sht40/sht40.h"
 #include "drivers/sps30/sps30.h"
 #include "drivers/stcc4/stcc4.h"
 #include "go_led.h"
@@ -213,6 +214,7 @@ SensorManager &GoHardwareBoard::sensors(bool warm) {
   assert(_bms_ready && "sensors() requires init_bms()");
   if (!_sensor_manager) {
     auto *sgp41 = new SGP41(_i2c_bus, I2C_ADDR_SGP41);
+    auto *sht40 = new SHT40(_i2c_bus, I2C_ADDR_SHT40);
     auto *sps30 = new SPS30(_i2c_bus);
     auto *dps368 = new DPS368(_i2c_bus, I2C_ADDR_DPS368);
 
@@ -228,6 +230,11 @@ SensorManager &GoHardwareBoard::sensors(bool warm) {
 
     s->co2 = init_co2_sensor(_i2c_bus);
 
+    if (sht40->init()) {
+      s->temp_hum = sht40;
+    } else {
+      AG_LOGE(TAG, "SHT40 init failed");
+    }
     if (sgp41->init()) {
       s->tvoc_nox = sgp41;
     } else {
@@ -239,9 +246,10 @@ SensorManager &GoHardwareBoard::sensors(bool warm) {
       AG_LOGE(TAG, "SPS30 init failed");
     }
 
-    s->temp_hum_a_fallback.priority[0] = TempHumSource::CO2;
-    s->temp_hum_a_fallback.priority[1] = TempHumSource::PRESSURE;
-    s->temp_hum_a_fallback.count = 2;
+    s->temp_hum_a_fallback.priority[0] = TempHumSource::DEDICATED;
+    s->temp_hum_a_fallback.priority[1] = TempHumSource::CO2;
+    s->temp_hum_a_fallback.priority[2] = TempHumSource::PRESSURE;
+    s->temp_hum_a_fallback.count = 3;
 
     _sensor_manager = new SensorManager(*s);
   }
@@ -328,6 +336,8 @@ LP5036 *GoHardwareBoard::new_led_driver() {
   if (!led->init()) {
     AG_LOGE(TAG, "LP5036 LED driver init failed");
   }
+  // LED25 (OUT30) and LED26 (OUT31) brightness applied by orchestrator after
+  // settings load — see Orchestrator::apply_led_brightness().
   return led;
 }
 

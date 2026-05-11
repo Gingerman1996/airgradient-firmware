@@ -148,6 +148,7 @@ private:
   void stop_tracking();
   void change_mode(OperatingMode new_mode);
   void apply_settings_change();
+  void apply_led_brightness();
   bool clear_data();
   bool factory_reset();
   void save_tag(uint8_t tag_index, const char *tag_label);
