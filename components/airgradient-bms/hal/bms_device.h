@@ -72,6 +72,14 @@ public:
   /// OTG boost depending on charger state.
   /// @return true if the request succeeded.
   virtual bool configure_pmid_mode(BmsPmidMode) { return false; }
+
+  /// Enable or disable the charging current path.  When disabled, the
+  /// charger IC holds the battery at its current SOC (no current into the
+  /// cell) while still passing input current through to the system rail.
+  /// Used to stop charging at "full" so the cell isn't held at 100 % when
+  /// USB stays connected (better for long-term cell health).
+  /// @return true if the request succeeded.  Default: not supported.
+  virtual bool set_charge_enable(bool) { return false; }
 };
 
 #endif // BMS_DEVICE_H

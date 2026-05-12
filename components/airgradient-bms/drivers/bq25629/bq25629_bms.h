@@ -47,6 +47,7 @@ public:
   bool feature_ship_available() const override;
   bool enter_ship_mode() override;
   bool configure_pmid_mode(BmsPmidMode mode) override;
+  bool set_charge_enable(bool enable) override;
 
 private:
   /// One-shot OTG configuration applied during init():

@@ -109,6 +109,24 @@ public:
   /// @return true on success or when no change was needed.
   bool set_design_capacity_mah(uint16_t mah);
 
+  /// Cell configuration parameters living in the State subclass (0x52).
+  /// Each field is a 16-bit big-endian (MSB-first) integer in Data Memory.
+  struct CellConfig {
+    uint16_t design_capacity_mah;   ///< Initial Qmax estimate (range 0..8000)
+    uint16_t design_energy_mwh;     ///< For constant-power load models
+    uint16_t terminate_voltage_mv;  ///< Cell-empty cutoff (range 2500..3700)
+    uint16_t sleep_current_ma;      ///< AverageCurrent below this = relaxation
+                                    ///<   (range 0..1000, default 10).
+  };
+
+  /// Apply a full cell-configuration block in a single CFGUPDATE session.
+  /// Atomic: either every field is updated, or none is (if any step fails the
+  /// chip stays on its pre-write values, since the BlockDataChecksum commit
+  /// is the last step).  Idempotent: if all fields already match the
+  /// requested values, no CFGUPDATE is entered (Qmax learning is preserved).
+  /// @return true on success or when no change was needed.
+  bool configure_cell(const CellConfig &cfg);
+
   /// Issue `Control(RESET = 0x0041)` from inside CFGUPDATE.  Per TRM §5.1.16
   /// this performs a full device reset and reloads all RAM data memory from
   /// the chip's ROM defaults.  Used to recover when data memory has been

@@ -333,3 +333,17 @@ bool BQ25629Bms::_apply_otg_config() {
 
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// Charging enable / disable
+// ---------------------------------------------------------------------------
+
+bool BQ25629Bms::set_charge_enable(bool enable) {
+  esp_err_t err = _charger.enable_charging(enable);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "enable_charging(%s) failed: %s", enable ? "true" : "false",
+             esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}

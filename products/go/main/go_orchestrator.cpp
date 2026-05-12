@@ -323,6 +323,48 @@ void Orchestrator::on_bms_status_timer() {
           bms_power_source_str(previous_power_source), bms_power_source_str(status.power_source));
       request_background_display_update();
     }
+
+    // Charge-done UX sequence:
+    //   1. BMS transitions to NotCharging while USB is plugged in →
+    //      play a short "charge done" melody once, start a 500 s rest
+    //      countdown (matches the BQ27427 ResRelax Time so the fuel gauge
+    //      can capture its OCV-at-rest reading before the cell is
+    //      disturbed by being unplugged).
+    //   2. 500 s elapses while still in that state → blink LED8 and play
+    //      an "unplug me now" beep.  This is the user's cue.
+    //   3. Anything else (charging resumes, USB removed) cancels both
+    //      and clears state.
+    const bool plugged_in = bms_power_source_has_external_input(status.power_source);
+    const bool in_rest_state = !now_charging && plugged_in;
+    const bool was_in_rest_state = (_charge_done_start_ms != 0);
+    const uint32_t now_ms = static_cast<uint32_t>(RTOS::get_time_ms());
+
+    if (in_rest_state && !was_in_rest_state) {
+      // Entered: BMS just finished charging while still plugged in.
+      _charge_done_start_ms = now_ms;
+      _charge_done_alerted = false;
+      AG_LOGI(TAG, "charge done — starting %u s rest countdown", CHARGE_REST_TIMEOUT_MS / 1000);
+      static constexpr BuzzerService::Note kChargeDoneMelody[] = {
+          {1500, 100}, {0, 50}, {2000, 100}, {0, 50}, {2500, 150},
+      };
+      _svc.buzzer.play(kChargeDoneMelody,
+                       sizeof(kChargeDoneMelody) / sizeof(kChargeDoneMelody[0]));
+    } else if (!in_rest_state && was_in_rest_state) {
+      // Exited: charging resumed or USB unplugged.
+      _charge_done_start_ms = 0;
+      _charge_done_alerted = false;
+      _svc.led.set_charge_done_alert(false);
+    } else if (in_rest_state && !_charge_done_alerted &&
+               (now_ms - _charge_done_start_ms) >= CHARGE_REST_TIMEOUT_MS) {
+      // Rest period complete — wake the user.
+      _charge_done_alerted = true;
+      AG_LOGI(TAG, "rest period complete — alerting user to unplug");
+      _svc.led.set_charge_done_alert(true);
+      static constexpr BuzzerService::Note kUnplugAlert[] = {
+          {2700, 100}, {0, 80}, {2700, 100}, {0, 80}, {2700, 100}, {0, 80}, {3500, 250},
+      };
+      _svc.buzzer.play(kUnplugAlert, sizeof(kUnplugAlert) / sizeof(kUnplugAlert[0]));
+    }
   }
 
   _last_bms_status_poll_ms = static_cast<uint32_t>(RTOS::get_time_ms());

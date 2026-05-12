@@ -205,6 +205,60 @@ void LedService::set_indicator_brightness(uint8_t pwm) {
   _config.driver->set_channel(31, pwm);
 }
 
+void LedService::set_charge_done_alert(bool active) {
+  if (active == _alert_active) {
+    return; // idempotent — already in desired state
+  }
+  _alert_active = active;
+
+#ifndef TEST_HOST
+  if (active) {
+    if (_alert_timer == nullptr) {
+      _alert_timer = xTimerCreate("led_alert", pdMS_TO_TICKS(500), pdTRUE,
+                                  static_cast<void *>(this), &LedService::_alert_timer_cb);
+    }
+    _alert_phase = false;
+    _alert_tick(); // toggles to true and writes first ON frame immediately
+    if (_alert_timer != nullptr) {
+      xTimerStart(_alert_timer, 0);
+    }
+  } else {
+    if (_alert_timer != nullptr) {
+      xTimerStop(_alert_timer, 0);
+    }
+    // Turn LED8 off
+    if (_config.driver != nullptr) {
+      _config.driver->set_rgb(21, 0, 0, 0);
+    }
+    _alert_phase = false;
+  }
+#endif
+}
+
+void LedService::_alert_timer_cb(LedTimerHandle timer) {
+#ifndef TEST_HOST
+  auto *self = static_cast<LedService *>(pvTimerGetTimerID(timer));
+  if (self != nullptr) {
+    self->_alert_tick();
+  }
+#else
+  (void)timer;
+#endif
+}
+
+void LedService::_alert_tick() {
+  if (_config.driver == nullptr) {
+    return;
+  }
+  _alert_phase = !_alert_phase;
+  if (_alert_phase) {
+    // White at 50% — LED8 is on LP5036 OUT21 (B), 22 (G), 23 (R)
+    _config.driver->set_rgb(21, 128, 128, 128);
+  } else {
+    _config.driver->set_rgb(21, 0, 0, 0);
+  }
+}
+
 void LedService::set_back_leds_rgb(uint8_t r, uint8_t g, uint8_t b) {
   if (_config.driver == nullptr) {
     return;

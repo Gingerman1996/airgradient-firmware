@@ -42,9 +42,12 @@ constexpr uint8_t CMD_BLOCK_DATA_BASE = 0x40;
 constexpr uint8_t CMD_BLOCK_DATA_CHECKSUM = 0x60;
 constexpr uint8_t CMD_BLOCK_DATA_CONTROL = 0x61;
 
-// Subclass / offsets in Data Memory (TRM §7.4.2.3.5).
-constexpr uint8_t SUBCLASS_STATE = 0x52;     // 82 decimal
-constexpr uint8_t OFFSET_DESIGN_CAPACITY = 6; // bytes 6/7 within block 0
+// Subclass / offsets in Data Memory (TRM §7.4.2.3.5–7.4.2.3.10).
+constexpr uint8_t SUBCLASS_STATE = 0x52;        // 82 decimal
+constexpr uint8_t OFFSET_DESIGN_CAPACITY = 6;   // bytes 6/7 within block 0
+constexpr uint8_t OFFSET_DESIGN_ENERGY = 8;     // bytes 8/9
+constexpr uint8_t OFFSET_TERMINATE_VOLTAGE = 10; // bytes 10/11
+constexpr uint8_t OFFSET_SLEEP_CURRENT = 23;    // bytes 23/24
 
 // Flags() bit 4 = CFGUPDATE mode active.
 constexpr uint16_t FLAG_CFGUPDATE = (1u << 4);
@@ -438,6 +441,132 @@ bool BQ27427::set_design_capacity_mah(uint16_t mah) {
     return false;
   }
   ESP_LOGI(TAG, "Design Capacity verified at %umAh (csum=0x%02X)", mah, new_csum);
+  return true;
+}
+
+bool BQ27427::configure_cell(const CellConfig &cfg) {
+  if (_dev == nullptr) {
+    return false;
+  }
+
+  // Read current State block (offsets 0..23 cover all fields we touch).
+  if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  uint8_t block[32] = {};
+  if (!_read_block(CMD_BLOCK_DATA_BASE, block, sizeof(block))) {
+    return false;
+  }
+
+  auto pack = [&block](uint8_t offset, uint16_t value) {
+    block[offset]     = static_cast<uint8_t>((value >> 8) & 0xFF);
+    block[offset + 1] = static_cast<uint8_t>(value & 0xFF);
+  };
+  auto unpack = [&block](uint8_t offset) -> uint16_t {
+    return (static_cast<uint16_t>(block[offset]) << 8) | block[offset + 1];
+  };
+
+  const uint16_t cur_dc    = unpack(OFFSET_DESIGN_CAPACITY);
+  const uint16_t cur_de    = unpack(OFFSET_DESIGN_ENERGY);
+  const uint16_t cur_tv    = unpack(OFFSET_TERMINATE_VOLTAGE);
+  const uint16_t cur_sleep = unpack(OFFSET_SLEEP_CURRENT);
+
+  // Idempotency: if every field already matches, do nothing — preserves
+  // any Qmax / impedance learning the chip has already accumulated.
+  if (cur_dc == cfg.design_capacity_mah && cur_de == cfg.design_energy_mwh &&
+      cur_tv == cfg.terminate_voltage_mv && cur_sleep == cfg.sleep_current_ma) {
+    ESP_LOGI(TAG,
+             "Cell config already correct (DC=%u DE=%u TermV=%u SleepI=%u) — no change",
+             cur_dc, cur_de, cur_tv, cur_sleep);
+    return true;
+  }
+  ESP_LOGI(TAG, "Updating cell config:");
+  ESP_LOGI(TAG, "  DC      %u → %u mAh", cur_dc, cfg.design_capacity_mah);
+  ESP_LOGI(TAG, "  DE      %u → %u mWh", cur_de, cfg.design_energy_mwh);
+  ESP_LOGI(TAG, "  TermV   %u → %u mV",  cur_tv, cfg.terminate_voltage_mv);
+  ESP_LOGI(TAG, "  SleepI  %u → %u mA",  cur_sleep, cfg.sleep_current_ma);
+
+  // UNSEAL — required for any DM commit (TRM §6.4).  No-op when already unsealed.
+  if (!_unseal()) {
+    return false;
+  }
+
+  // Enter CFGUPDATE.
+  if (!_write_word(CMD_CONTROL, CTRL_SET_CFGUPDATE)) {
+    return false;
+  }
+  if (!_wait_cfgupdate_flag(true, 2000)) {
+    ESP_LOGW(TAG, "Could not enter CFGUPDATE — aborting cell config");
+    return false;
+  }
+
+  // Re-select the block (CFGUPDATE entry can clear the block pointer).
+  if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  if (!_read_block(CMD_BLOCK_DATA_BASE, block, sizeof(block))) {
+    return false;
+  }
+
+  // Modify all four fields locally (MSB-first per Data Memory convention).
+  pack(OFFSET_DESIGN_CAPACITY, cfg.design_capacity_mah);
+  pack(OFFSET_DESIGN_ENERGY, cfg.design_energy_mwh);
+  pack(OFFSET_TERMINATE_VOLTAGE, cfg.terminate_voltage_mv);
+  pack(OFFSET_SLEEP_CURRENT, cfg.sleep_current_ma);
+
+  // Write the full 32-byte block back in one transaction.
+  if (!_write_block(CMD_BLOCK_DATA_BASE, block, sizeof(block))) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+
+  // Fresh checksum from the modified block.
+  uint16_t sum = 0;
+  for (size_t i = 0; i < sizeof(block); ++i) {
+    sum += block[i];
+  }
+  const uint8_t new_csum = static_cast<uint8_t>(255 - (sum & 0xFF));
+  ESP_LOGI(TAG, "  new csum=0x%02X (block sum=0x%04X)", new_csum, sum);
+
+  // Commit: writing the checksum transfers BlockData() to RAM.
+  if (!_write_byte(CMD_BLOCK_DATA_CHECKSUM, new_csum)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(20));
+
+  // Exit CFGUPDATE.
+  if (!_write_word(CMD_CONTROL, CTRL_SOFT_RESET)) {
+    return false;
+  }
+  if (!_wait_cfgupdate_flag(false, 2000)) {
+    return false;
+  }
+
+  // Readback verification — re-read all four fields and compare.
+  vTaskDelay(pdMS_TO_TICKS(50));
+  if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  uint8_t verify[32] = {};
+  if (!_read_block(CMD_BLOCK_DATA_BASE, verify, sizeof(verify))) {
+    return false;
+  }
+  const uint16_t v_dc    = (uint16_t(verify[OFFSET_DESIGN_CAPACITY]) << 8) | verify[OFFSET_DESIGN_CAPACITY + 1];
+  const uint16_t v_de    = (uint16_t(verify[OFFSET_DESIGN_ENERGY]) << 8) | verify[OFFSET_DESIGN_ENERGY + 1];
+  const uint16_t v_tv    = (uint16_t(verify[OFFSET_TERMINATE_VOLTAGE]) << 8) | verify[OFFSET_TERMINATE_VOLTAGE + 1];
+  const uint16_t v_sleep = (uint16_t(verify[OFFSET_SLEEP_CURRENT]) << 8) | verify[OFFSET_SLEEP_CURRENT + 1];
+  ESP_LOGI(TAG, "Cell config readback: DC=%u DE=%u TermV=%u SleepI=%u",
+           v_dc, v_de, v_tv, v_sleep);
+
+  if (v_dc != cfg.design_capacity_mah || v_de != cfg.design_energy_mwh ||
+      v_tv != cfg.terminate_voltage_mv || v_sleep != cfg.sleep_current_ma) {
+    ESP_LOGE(TAG, "Cell config write did NOT stick — one or more fields wrong");
+    return false;
+  }
+  ESP_LOGI(TAG, "Cell config verified");
   return true;
 }
 

@@ -71,6 +71,7 @@ PowerService::PowerService(BmsDevice &bms, const gpio::Hal &gpio, const Config &
 PowerSnapshot PowerService::poll_bms() {
   PowerSnapshot status{};
 
+  // --- BMS telemetry (BQ25629) ---
   BmsTelemetry telemetry{};
   if (_bms.read_telemetry(telemetry)) {
     if (telemetry.is_battery_voltage_valid()) {
@@ -81,76 +82,125 @@ PowerSnapshot PowerService::poll_bms() {
     }
     status.telemetry = telemetry;
   } else {
-    AG_LOGW(TAG, "poll_bms: read_telemetry() failed");
+    AG_LOGW(TAG, "BMS read_telemetry() failed");
   }
 
-  // Prefer the fuel gauge's Impedance Track SOC when attached; otherwise
-  // fall back to the BMS voltage-based estimate.
+  // --- Fuel gauge snapshot (BQ27427) — single batch of reads ---
+  struct FgSnapshot {
+    bool present = false;
+    bool soc_ok = false, v_ok = false, i_ok = false, p_ok = false;
+    bool rem_ok = false, fcc_ok = false, t_ok = false, flags_ok = false;
+    uint8_t soc = 0;
+    uint16_t v_mv = 0;
+    int16_t i_ma = 0, p_mw = 0;
+    uint16_t rem_mah = 0, fcc_mah = 0;
+    float t_c = 0.0f;
+    uint16_t flags = 0;
+    // BQ27427 TRM §5.5 Flags() bit positions (low byte first, then high):
+    //   bit 0 = DSG (discharging)
+    //   bit 1 = SOCF, bit 2 = SOC1, bit 3 = BAT_DET
+    //   bit 4 = CFGUPMODE  (NOT charging — this was the previous bug)
+    //   bit 5 = ITPOR, bit 7 = OCVTAKEN
+    //   bit 8 = CHG (charging)
+    //   bit 9 = FC  (Full Charge)
+    bool fc() const { return flags_ok && (flags & (1u << 9)); }
+    bool chg() const { return flags_ok && (flags & (1u << 8)); }
+    bool dsg() const { return flags_ok && (flags & (1u << 0)); }
+  } fg;
+  if (_fuel_gauge != nullptr) {
+    fg.present = true;
+    fg.soc_ok = _fuel_gauge->read_soc_percent(fg.soc);
+    fg.v_ok = _fuel_gauge->read_voltage_mv(fg.v_mv);
+    fg.i_ok = _fuel_gauge->read_average_current_ma(fg.i_ma);
+    fg.p_ok = _fuel_gauge->read_average_power_mw(fg.p_mw);
+    fg.rem_ok = _fuel_gauge->read_remaining_capacity_mah(fg.rem_mah);
+    fg.fcc_ok = _fuel_gauge->read_full_charge_capacity_mah(fg.fcc_mah);
+    fg.t_ok = _fuel_gauge->read_internal_temperature_c(fg.t_c);
+    fg.flags_ok = _fuel_gauge->read_flags(fg.flags);
+  }
+
+  // --- SOC source: prefer FG; fall back to BMS voltage curve ---
   float pct = -1.0f;
   bool soc_from_fg = false;
-  if (_fuel_gauge != nullptr) {
-    uint8_t fg_soc = 0;
-    if (_fuel_gauge->read_soc_percent(fg_soc)) {
-      pct = static_cast<float>(fg_soc);
-      soc_from_fg = true;
-    }
-  }
-  if (!soc_from_fg && !_bms.get_battery_percentage(&pct)) {
-    AG_LOGW(TAG, "poll_bms: get_battery_percentage() failed (fg=%s)",
-            _fuel_gauge ? "read_failed" : "absent");
+  if (fg.soc_ok) {
+    pct = static_cast<float>(fg.soc);
+    soc_from_fg = true;
+  } else if (!_bms.get_battery_percentage(&pct)) {
+    AG_LOGW(TAG, "battery percentage unavailable (fg=%s)",
+            fg.present ? "read_failed" : "absent");
   }
   if (pct >= 0.0f) {
     status.battery_percentage = pct;
     status.critical = (pct < BATTERY_CRITICAL_PERCENT);
   }
 
+  // --- BMS status (charge state, power source, regulation flags) ---
   BmsStatus bms_status{};
   if (_bms.read_status(bms_status)) {
     status.charging_status = bms_status.charging_state;
     status.charger_status = bms_status;
     if (!sync_pmid_mode(bms_status.power_source)) {
-      AG_LOGW(TAG, "poll_bms: failed to sync PMID mode for source %s",
+      AG_LOGW(TAG, "failed to sync PMID mode for source %s",
               bms_power_source_str(bms_status.power_source));
     }
   }
 
-  AG_LOGI(TAG,
-          "poll_bms: perc=%.1f%% vbat=%.1fV vbus=%.1fV critical=%d | "
-          "charge=%s src=%s | "
-          "treg=%d vsys=%d iindpm=%d vindpm=%d safety_tmr=%d wd=%d",
-          status.battery_percentage, status.battery_voltage, status.charging_voltage,
-          status.critical, bms_charging_state_str(status.charger_status.charging_state),
-          bms_power_source_str(status.charger_status.power_source),
-          status.charger_status.thermal_regulation, status.charger_status.vsys_regulation,
-          status.charger_status.input_current_regulation,
-          status.charger_status.input_voltage_regulation,
-          status.charger_status.safety_timer_expired, status.charger_status.watchdog_expired);
+  // --- Auto-disable charging when the cell is full ---
+  // FG declares Full Charge (FC flag) when voltage reaches Charge Voltage
+  // AND |current| drops below Taper Rate.  At that point we clear the
+  // BMS's EN_CHG bit so the cell isn't held at 100% while USB stays
+  // plugged in (better for long-term cell health and useful for keeping
+  // a serial console attached to a fully-charged unit).  When the cell
+  // self-discharges or load drains it enough for FC to clear, we
+  // re-enable.  Edge-triggered — one I²C write per state change.
+  if (fg.flags_ok) {
+    const bool want_charge = !fg.fc();
+    if (want_charge != _charge_enabled) {
+      if (_bms.set_charge_enable(want_charge)) {
+        _charge_enabled = want_charge;
+        AG_LOGI(TAG, "charging %s (FC=%d)", want_charge ? "ENABLED" : "DISABLED", fg.fc());
+      } else {
+        AG_LOGW(TAG, "set_charge_enable(%d) failed", want_charge);
+      }
+    }
+  }
 
+  // --- Compact two-line log ---
+  // Line 1: BMS view (USB, charger state, currents on the system rail)
   const auto &t = status.telemetry;
-  AG_LOGI(TAG, "poll_bms: ibus=%dmA ibat=%dmA vsys=%umV vpmid=%umV ts=%.1f%% tdie=%d°C",
-          t.input_current_ma, t.battery_current_ma, t.system_voltage_mv, t.pmid_voltage_mv,
-          t.ts_percent, t.die_temperature_c);
+  AG_LOGI(TAG,
+          "BMS  chg=%s en=%d src=%s vbus=%.2fV ibus=%dmA ibat=%+dmA "
+          "vsys=%umV vpmid=%umV tdie=%d°C",
+          bms_charging_state_str(status.charger_status.charging_state),
+          _charge_enabled,
+          bms_power_source_str(status.charger_status.power_source),
+          status.charging_voltage, t.input_current_ma, t.battery_current_ma,
+          t.system_voltage_mv, t.pmid_voltage_mv, t.die_temperature_c);
 
-  if (_fuel_gauge != nullptr) {
-    uint16_t fg_v_mv = 0;
-    int16_t fg_i_ma = 0;
-    int16_t fg_p_mw = 0;
-    uint16_t fg_rem_mah = 0;
-    uint16_t fg_fcc_mah = 0;
-    float fg_t_c = 0.0f;
-    const bool ok_v = _fuel_gauge->read_voltage_mv(fg_v_mv);
-    const bool ok_i = _fuel_gauge->read_average_current_ma(fg_i_ma);
-    const bool ok_p = _fuel_gauge->read_average_power_mw(fg_p_mw);
-    const bool ok_r = _fuel_gauge->read_remaining_capacity_mah(fg_rem_mah);
-    const bool ok_f = _fuel_gauge->read_full_charge_capacity_mah(fg_fcc_mah);
-    const bool ok_t = _fuel_gauge->read_internal_temperature_c(fg_t_c);
+  // Line 2: FG view (SOC, cell V/I/P, capacity, key flags) when attached.
+  if (fg.present) {
     AG_LOGI(TAG,
-            "poll_bms: fg src=%s v=%s%umV i=%s%dmA p=%s%dmW rem=%s%umAh "
-            "fcc=%s%umAh t=%s%.1fC",
-            soc_from_fg ? "FG" : "BMS",
-            ok_v ? "" : "?", fg_v_mv, ok_i ? "" : "?", fg_i_ma,
-            ok_p ? "" : "?", fg_p_mw, ok_r ? "" : "?", fg_rem_mah,
-            ok_f ? "" : "?", fg_fcc_mah, ok_t ? "" : "?", fg_t_c);
+            "FG   SOC=%s%u%% V=%s%.3fV I=%s%+dmA P=%s%+dmW "
+            "rem=%s%u/%s%umAh T=%s%.1f°C [FC=%d CHG=%d DSG=%d] src=%s",
+            fg.soc_ok ? "" : "?", fg.soc,
+            fg.v_ok ? "" : "?", fg.v_mv / 1000.0f,
+            fg.i_ok ? "" : "?", fg.i_ma,
+            fg.p_ok ? "" : "?", fg.p_mw,
+            fg.rem_ok ? "" : "?", fg.rem_mah,
+            fg.fcc_ok ? "" : "?", fg.fcc_mah,
+            fg.t_ok ? "" : "?", fg.t_c,
+            fg.fc(), fg.chg(), fg.dsg(),
+            soc_from_fg ? "FG" : "BMS");
+  }
+
+  // Regulation flags only when something is actually active — these are
+  // important when they happen but pure noise when they aren't.
+  const auto &cs = status.charger_status;
+  if (cs.thermal_regulation || cs.vsys_regulation || cs.input_current_regulation ||
+      cs.input_voltage_regulation || cs.safety_timer_expired || cs.watchdog_expired) {
+    AG_LOGW(TAG, "BMS regulation: treg=%d vsys=%d iindpm=%d vindpm=%d safety=%d wd=%d",
+            cs.thermal_regulation, cs.vsys_regulation, cs.input_current_regulation,
+            cs.input_voltage_regulation, cs.safety_timer_expired, cs.watchdog_expired);
   }
 
   return status;

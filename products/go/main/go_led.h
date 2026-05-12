@@ -17,11 +17,15 @@
 
 #ifndef TEST_HOST
 #include <driver/i2c_master.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/timers.h>
 using LedI2cBusHandle = i2c_master_bus_handle_t;
 using LedI2cDevHandle = i2c_master_dev_handle_t;
+using LedTimerHandle = TimerHandle_t;
 #else
 using LedI2cBusHandle = void *;
 using LedI2cDevHandle = void *;
+using LedTimerHandle = void *;
 #endif
 
 #include <cstddef>
@@ -131,6 +135,14 @@ public:
   /// only writes to LED1/LED2/LED10 channels.
   void set_back_leds_rgb(uint8_t r, uint8_t g, uint8_t b);
 
+  /// Blink LED8 white at ~1 Hz to alert the user that charging is complete
+  /// and they can unplug.  `active=true` starts the blink, `active=false`
+  /// stops it and turns LED8 off.  Idempotent — safe to call every poll
+  /// cycle with the current desired state.  LED8 is on LP5036 OUT21/22/23
+  /// (B/G/R), separate from the touch-feedback channels so no contention
+  /// with the worker queue.
+  void set_charge_done_alert(bool active);
+
   bool ready() const { return _config.driver != nullptr && _queue != nullptr; }
 
 private:
@@ -144,4 +156,12 @@ private:
   /// Map Led → (b_channel, g_channel, r_channel) per v0.3 wiring.
   static void _map(Led led, uint8_t &b_ch, uint8_t &g_ch, uint8_t &r_ch);
   void _set_led_rgb(Led led, uint8_t r, uint8_t g, uint8_t b);
+
+  // --- Charge-done alert blink (LED8) ---
+  LedTimerHandle _alert_timer = nullptr;
+  bool _alert_active = false;
+  bool _alert_phase = false; ///< Current toggle state (on/off)
+
+  static void _alert_timer_cb(LedTimerHandle timer);
+  void _alert_tick();
 };

@@ -109,6 +109,14 @@ private:
   // --- PM sensor sleep (Portable mode power-cycling) ---
   bool _pm_prepare_sent = false; ///< PREPARE already sent for the current measurement cycle
 
+  // --- Charge-done alert tracking ---
+  /// Uptime when the BMS transitioned to NotCharging while still plugged in.
+  /// 0 = not currently in the charge-done waiting state.
+  uint32_t _charge_done_start_ms = 0;
+  /// True after the rest-timeout alert (LED8 blink + beep) has fired.
+  /// Prevents repeating the alert every poll cycle.
+  bool _charge_done_alerted = false;
+
   // --- Display buffers (mutable for const build_context) ---
   mutable Measures _display_measures{};
   mutable MeasuresAGo _cache_buf[UI_CHART_BUF_SIZE]{};
@@ -123,6 +131,13 @@ private:
   static constexpr uint32_t MAX_REASONABLE_TIMEOUT_MS = 3600000;
   static constexpr uint32_t BLE_COMMAND_RESULT_DELAY_MS = 200;
   static constexpr uint32_t SHUTDOWN_DISPLAY_DELAY_MS = 500;
+
+  // After the BMS reports charge complete and the user-facing "charge done"
+  // melody fires, we wait this long before triggering the unplug-me alert
+  // (LED8 blink + beep).  Matches the BQ27427 ResRelax Time default so the
+  // fuel gauge has its OCV-at-rest reading captured before the user
+  // disconnects.
+  static constexpr uint32_t CHARGE_REST_TIMEOUT_MS = 500000;
 
   // --- Event dispatch ---
   void dispatch(const Event &event);

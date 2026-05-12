@@ -203,12 +203,25 @@ void GoHardwareBoard::init_bms() {
       }
     }
 
-    // Configure Design Capacity for the AGo cell (2000 mAh).  The driver
-    // method is idempotent — if the chip already has 2000 mAh, this is a
-    // no-op and does not perturb learned Qmax state.  Drives the full
-    // UNSEAL → CFGUPDATE → block write → SOFT_RESET → readback sequence.
-    if (!_fuel_gauge->set_design_capacity_mah(2000)) {
-      AG_LOGW(TAG, "BQ27427: failed to set Design Capacity=2000mAh");
+    // Configure the BQ27427 for the AGo cell.  All four fields written
+    // atomically in a single CFGUPDATE session.  Idempotent — if every
+    // field already matches, no CFGUPDATE is entered (preserves any
+    // learned Qmax / impedance state across reboots).
+    //
+    //   DC=2000 mAh     — AGo's 2000 mAh single-cell Li-ion
+    //   DE=7400 mWh     — 2000 mAh × 3.7 V nominal
+    //   TermV=3000 mV   — conservative cell-empty cutoff; verify against
+    //                     cell datasheet (some Li-ion cells spec 2.75 V)
+    //   SleepI=50 mA    — up from default 10 mA so AGo's normal idle
+    //                     current qualifies for Qmax-learning rest periods
+    const BQ27427::CellConfig cell = {
+        .design_capacity_mah = 2000,
+        .design_energy_mwh = 7400,
+        .terminate_voltage_mv = 3000,
+        .sleep_current_ma = 50,
+    };
+    if (!_fuel_gauge->configure_cell(cell)) {
+      AG_LOGW(TAG, "BQ27427: failed to apply cell configuration");
     }
     uint8_t soc = 0;
     uint16_t mv = 0;

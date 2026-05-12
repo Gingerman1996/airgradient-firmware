@@ -258,6 +258,11 @@ private:
   BQ27427 *_fuel_gauge = nullptr; ///< Optional fuel gauge — not owned.
   BmsPmidMode _pmid_mode = BmsPmidMode::Unknown;
 
+  /// Cached state of the BMS charge-enable bit, so we only issue an I²C
+  /// write when the desired state actually changes (edge-trigger).
+  /// Default to "true" (enabled) since BQ25629::init() leaves charging on.
+  bool _charge_enabled = true;
+
   /// Configure timer and GPIO wake sources before entering sleep.
   /// Wrapped in #ifndef TEST_HOST — not callable from host test builds.
   void configure_wake_sources(uint32_t timer_ms);
