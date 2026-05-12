@@ -37,6 +37,10 @@ static const char *const DISPLAY_LED_BRIGHTNESS_OPTIONS[] = {"Off", "2%", "4%",
                                                              "6%", "8%", "10%"};
 static constexpr uint8_t DISPLAY_LED_BRIGHTNESS_COUNT = 6;
 
+// Battery-learning UX toggle — Off/On.  Only visible in admin mode.
+static const char *const BATTERY_LEARNING_OPTIONS[] = {"Off", "On"};
+static constexpr uint8_t BATTERY_LEARNING_COUNT = 2;
+
 // Tag labels (indices 2..11 in the tag list screen)
 static const char *const TAG_LABELS[] = {
     "Traffic Emissions", "Road Dust",         "Construction Work", "Biomass Burning",
@@ -59,9 +63,13 @@ static constexpr uint8_t SETTING_LED_BRIGHTNESS = 8;
 static constexpr uint8_t SETTING_BACK_LED_BRIGHTNESS = 9;
 static constexpr uint8_t SETTING_CO2_CALIBRATION = 10;
 static constexpr uint8_t SETTING_CLEAR_DATA = 11;
-static constexpr uint8_t SETTING_EXIT_ADMIN = 12; // only shown when admin_mode
+// Admin-only rows live at the bottom so move_settings() can skip them via
+// `total - ADMIN_HIDDEN_ROWS` when admin mode is off.
+static constexpr uint8_t SETTING_BATTERY_LEARNING = 12;
+static constexpr uint8_t SETTING_EXIT_ADMIN = 13;
+static constexpr uint8_t ADMIN_HIDDEN_ROWS = 2;
 
-static constexpr uint8_t SETTINGS_TOTAL = 13;       // indices 0..12
+static constexpr uint8_t SETTINGS_TOTAL = 14;       // indices 0..13
 static constexpr uint8_t TAG_LIST_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t MAIN_MENU_TOTAL = 4;       // indices 0..3
 static constexpr uint8_t CONFIRM_TOTAL = 5;         // indices 0..4
@@ -337,6 +345,7 @@ void UIManager::sync_settings(const GoSettings &s) {
                                 : static_cast<uint8_t>(DISPLAY_LED_BRIGHTNESS_COUNT - 1);
   _setting_back_led_brightness =
       (s.back_led_brightness < LED_BRIGHTNESS_COUNT) ? s.back_led_brightness : 4;
+  _setting_battery_learning = s.battery_learning_enabled ? 1 : 0;
 }
 
 void UIManager::apply_to_settings(GoSettings &settings) const {
@@ -399,6 +408,7 @@ void UIManager::apply_to_settings(GoSettings &settings) const {
   settings.back_led_brightness = (_setting_back_led_brightness < LED_BRIGHTNESS_COUNT)
                                      ? _setting_back_led_brightness
                                      : 4;
+  settings.battery_learning_enabled = (_setting_battery_learning != 0);
 }
 
 void UIManager::reset_to_home() {
@@ -480,9 +490,9 @@ void UIManager::move_menu(int delta) {
 }
 
 void UIManager::move_settings(int delta) {
-  // Circular navigation, page-based scroll.  Skip the Exit Admin row when
-  // admin mode is off so it isn't selectable.
-  const uint8_t total = _admin_mode ? SETTINGS_TOTAL : (SETTINGS_TOTAL - 1);
+  // Circular navigation, page-based scroll.  Hide the admin-only rows at
+  // the bottom (Battery Learning + Exit Admin Mode) when admin is off.
+  const uint8_t total = _admin_mode ? SETTINGS_TOTAL : (SETTINGS_TOTAL - ADMIN_HIDDEN_ROWS);
   _settings_index = (uint8_t)wrap((int)_settings_index + delta, total);
   _settings_scroll_start = page_scroll(_settings_index);
 }
@@ -551,6 +561,8 @@ uint8_t UIManager::setting_option_count(uint8_t setting_id) const {
     return DISPLAY_LED_BRIGHTNESS_COUNT;
   case SETTING_BACK_LED_BRIGHTNESS:
     return LED_BRIGHTNESS_COUNT;
+  case SETTING_BATTERY_LEARNING:
+    return BATTERY_LEARNING_COUNT;
   default:
     return 0;
   }
@@ -574,6 +586,8 @@ uint8_t UIManager::setting_current_option(uint8_t setting_id) const {
     return _setting_led_brightness;
   case SETTING_BACK_LED_BRIGHTNESS:
     return _setting_back_led_brightness;
+  case SETTING_BATTERY_LEARNING:
+    return _setting_battery_learning;
   default:
     return 0;
   }
@@ -608,6 +622,9 @@ void UIManager::apply_setting_choice(uint8_t option_index) {
     break;
   case SETTING_BACK_LED_BRIGHTNESS:
     _setting_back_led_brightness = option_index;
+    break;
+  case SETTING_BATTERY_LEARNING:
+    _setting_battery_learning = option_index;
     break;
   default:
     break;
@@ -734,7 +751,9 @@ UIActionResult UIManager::dispatch_settings(InputSource source, InputType type) 
       // and shows a snackbar.  Returns to the Settings screen.
       _admin_mode = false; // local mirror — orchestrator will save settings
       result.action = UIAction::ExitAdminMode;
-    } else if (_settings_index >= SETTING_UNITS && _settings_index <= SETTING_BACK_LED_BRIGHTNESS) {
+    } else if ((_settings_index >= SETTING_UNITS &&
+                _settings_index <= SETTING_BACK_LED_BRIGHTNESS) ||
+               (_settings_index == SETTING_BATTERY_LEARNING && _admin_mode)) {
       // Open choice screen for this setting
       open_settings_choice(_settings_index);
     }
@@ -971,6 +990,14 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
     case SETTING_CLEAR_DATA:
       (void)snprintf(label, sizeof(label), "Data: Clear Data");
       break;
+    case SETTING_BATTERY_LEARNING:
+      // Admin-only — hidden in production.
+      if (!_admin_mode) {
+        continue;
+      }
+      (void)snprintf(label, sizeof(label), "Battery Learning: %s",
+                     BATTERY_LEARNING_OPTIONS[_setting_battery_learning]);
+      break;
     case SETTING_EXIT_ADMIN:
       // Hidden in production — render only when admin mode is active.
       if (!_admin_mode) {
@@ -1023,6 +1050,9 @@ void UIManager::populate_settings_choice_rows(DisplayValues &v) const {
     break;
   case SETTING_BACK_LED_BRIGHTNESS:
     options = LED_BRIGHTNESS_OPTIONS;
+    break;
+  case SETTING_BATTERY_LEARNING:
+    options = BATTERY_LEARNING_OPTIONS;
     break;
   default:
     break;

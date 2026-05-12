@@ -36,12 +36,18 @@ struct GoSettings {
   uint8_t back_led_brightness = 4;
 
   // --- Admin / calibration mode ---
-  /// When true, factory-calibration affordances are exposed (e.g. the
-  /// charge-done melody + 500 s rest countdown + unplug-me alert used to
-  /// guide BQ27427 Qmax learning).  Default false for production — those
-  /// affordances are noise for end users.  Entered by a deliberate touch
-  /// gesture, exited from the Settings menu.
+  /// When true, factory-calibration affordances are exposed.  Default
+  /// false for production.  Entered by a deliberate touch gesture, exited
+  /// from the Settings menu.
   bool admin_mode = false;
+
+  /// Master toggle for the BQ27427 battery-learning UX (charge-done
+  /// melody + 500 s rest countdown + LED8 unplug-me blink + alert beep).
+  /// Only meaningful inside `admin_mode` — production users never see
+  /// the toggle and the UX stays silent regardless of this flag.
+  /// Default true so calibration runs immediately after the first admin
+  /// entry; admin can disable the notifications once Qmax has converged.
+  bool battery_learning_enabled = true;
 
   // --- Identity ---
   std::string device_name = "airgradient-go";

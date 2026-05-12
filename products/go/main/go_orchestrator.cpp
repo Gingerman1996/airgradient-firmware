@@ -346,7 +346,13 @@ void Orchestrator::on_bms_status_timer() {
     //   3. Anything else (charging resumes, USB removed) cancels both
     //      and clears state.
     const bool plugged_in = bms_power_source_has_external_input(status.power_source);
-    const bool in_rest_state = _settings.admin_mode && !now_charging && plugged_in;
+    // Battery-learning UX gate: admin mode must be active AND the
+    // per-feature toggle must be enabled.  Production users (admin off)
+    // never see this; admins who have completed calibration can turn the
+    // notifications off without leaving admin mode.
+    const bool learning_ux_enabled =
+        _settings.admin_mode && _settings.battery_learning_enabled;
+    const bool in_rest_state = learning_ux_enabled && !now_charging && plugged_in;
     const bool was_in_rest_state = (_charge_done_start_ms != 0);
     const uint32_t now_ms = static_cast<uint32_t>(RTOS::get_time_ms());
 

@@ -183,6 +183,10 @@ private:
   /// Mirror of `GoSettings::admin_mode` — only used for menu row visibility.
   bool _admin_mode = false;
 
+  /// Mirror of `GoSettings::battery_learning_enabled` — toggleable from
+  /// the admin-only Settings row.  0 = Off, 1 = On.
+  uint8_t _setting_battery_learning = 1;
+
   // Snackbar
   char _snackbar_text[48] = {};
   uint32_t _snackbar_deadline_ms = 0;
