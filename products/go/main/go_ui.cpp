@@ -48,10 +48,11 @@ static constexpr uint8_t SETTING_GPS_MODE = 5;
 static constexpr uint8_t SETTING_MODE = 6;
 static constexpr uint8_t SETTING_AUTO_LOCK = 7;
 static constexpr uint8_t SETTING_LED_BRIGHTNESS = 8;
-static constexpr uint8_t SETTING_CO2_CALIBRATION = 9;
-static constexpr uint8_t SETTING_CLEAR_DATA = 10;
+static constexpr uint8_t SETTING_BACK_LED_BRIGHTNESS = 9;
+static constexpr uint8_t SETTING_CO2_CALIBRATION = 10;
+static constexpr uint8_t SETTING_CLEAR_DATA = 11;
 
-static constexpr uint8_t SETTINGS_TOTAL = 11;       // indices 0..10
+static constexpr uint8_t SETTINGS_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t TAG_LIST_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t MAIN_MENU_TOTAL = 4;       // indices 0..3
 static constexpr uint8_t CONFIRM_TOTAL = 5;         // indices 0..4
@@ -323,6 +324,8 @@ void UIManager::sync_settings(const GoSettings &s) {
     _setting_auto_lock = 3;
 
   _setting_led_brightness = (s.led_brightness < LED_BRIGHTNESS_COUNT) ? s.led_brightness : 4;
+  _setting_back_led_brightness =
+      (s.back_led_brightness < LED_BRIGHTNESS_COUNT) ? s.back_led_brightness : 4;
 }
 
 void UIManager::apply_to_settings(GoSettings &settings) const {
@@ -382,6 +385,9 @@ void UIManager::apply_to_settings(GoSettings &settings) const {
   settings.led_brightness = (_setting_led_brightness < LED_BRIGHTNESS_COUNT)
                                 ? _setting_led_brightness
                                 : 4;
+  settings.back_led_brightness = (_setting_back_led_brightness < LED_BRIGHTNESS_COUNT)
+                                     ? _setting_back_led_brightness
+                                     : 4;
 }
 
 void UIManager::reset_to_home() {
@@ -529,6 +535,7 @@ uint8_t UIManager::setting_option_count(uint8_t setting_id) const {
   case SETTING_AUTO_LOCK:
     return AUTO_LOCK_COUNT;
   case SETTING_LED_BRIGHTNESS:
+  case SETTING_BACK_LED_BRIGHTNESS:
     return LED_BRIGHTNESS_COUNT;
   default:
     return 0;
@@ -551,6 +558,8 @@ uint8_t UIManager::setting_current_option(uint8_t setting_id) const {
     return _setting_auto_lock;
   case SETTING_LED_BRIGHTNESS:
     return _setting_led_brightness;
+  case SETTING_BACK_LED_BRIGHTNESS:
+    return _setting_back_led_brightness;
   default:
     return 0;
   }
@@ -582,6 +591,9 @@ void UIManager::apply_setting_choice(uint8_t option_index) {
     break;
   case SETTING_LED_BRIGHTNESS:
     _setting_led_brightness = option_index;
+    break;
+  case SETTING_BACK_LED_BRIGHTNESS:
+    _setting_back_led_brightness = option_index;
     break;
   default:
     break;
@@ -703,7 +715,7 @@ UIActionResult UIManager::dispatch_settings(InputSource source, InputType type) 
                _settings_index == SETTING_CLEAR_DATA) {
       // Open confirm dialog for action items
       open_confirm(_settings_index);
-    } else if (_settings_index >= SETTING_UNITS && _settings_index <= SETTING_LED_BRIGHTNESS) {
+    } else if (_settings_index >= SETTING_UNITS && _settings_index <= SETTING_BACK_LED_BRIGHTNESS) {
       // Open choice screen for this setting
       open_settings_choice(_settings_index);
     }
@@ -923,8 +935,12 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
       (void)snprintf(label, sizeof(label), "Auto Lock: %s", AUTO_LOCK_OPTIONS[_setting_auto_lock]);
       break;
     case SETTING_LED_BRIGHTNESS:
-      (void)snprintf(label, sizeof(label), "LED Brightness: %s",
+      (void)snprintf(label, sizeof(label), "Display LED: %s",
                      LED_BRIGHTNESS_OPTIONS[_setting_led_brightness]);
+      break;
+    case SETTING_BACK_LED_BRIGHTNESS:
+      (void)snprintf(label, sizeof(label), "AQI LED: %s",
+                     LED_BRIGHTNESS_OPTIONS[_setting_back_led_brightness]);
       break;
     case SETTING_CO2_CALIBRATION:
       (void)snprintf(label, sizeof(label), "CO2: Calibrate");
@@ -973,6 +989,7 @@ void UIManager::populate_settings_choice_rows(DisplayValues &v) const {
     options = AUTO_LOCK_OPTIONS;
     break;
   case SETTING_LED_BRIGHTNESS:
+  case SETTING_BACK_LED_BRIGHTNESS:
     options = LED_BRIGHTNESS_OPTIONS;
     break;
   default:

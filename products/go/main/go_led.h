@@ -126,6 +126,11 @@ public:
   /// safe because the worker only writes to channels 0–2, 3–5, 27–29.
   void set_indicator_brightness(uint8_t pwm);
 
+  /// Set all five back-side RGB LEDs (LED3, LED5, LED6, LED7, LED9) to the
+  /// same colour.  Bypasses the worker queue — safe because the worker
+  /// only writes to LED1/LED2/LED10 channels.
+  void set_back_leds_rgb(uint8_t r, uint8_t g, uint8_t b);
+
   bool ready() const { return _config.driver != nullptr && _queue != nullptr; }
 
 private:

@@ -442,6 +442,8 @@ void Orchestrator::on_sensor_data(const MeasuresAGo &data) {
           _cached_measures.pm_a.pm_25, _cached_measures.co2.co2, _cached_measures.tvoc_nox.tvoc_raw,
           _cached_measures.tvoc_nox.nox_raw, _cached_measures.pressure.pressure);
 
+  apply_pm25_indicator();
+
   _svc.storage_service.cache_measurement(_cached_measures);
 
   if (_tracking_active) {
@@ -728,6 +730,45 @@ void Orchestrator::apply_led_brightness() {
   static constexpr uint8_t PWM_MAP[5] = {0, 64, 128, 191, 255};
   const uint8_t idx = (_settings.led_brightness < 5) ? _settings.led_brightness : 4;
   _svc.led.set_indicator_brightness(PWM_MAP[idx]);
+  // Re-apply the back-LED PM2.5 colour so a brightness change takes effect
+  // immediately without waiting for the next sensor update.
+  apply_pm25_indicator();
+}
+
+void Orchestrator::apply_pm25_indicator() {
+  // 0=Off, 1=25%, 2=50%, 3=75%, 4=100% — same map as apply_led_brightness().
+  static constexpr uint8_t PWM_MAP[5] = {0, 64, 128, 191, 255};
+  const uint8_t scale =
+      PWM_MAP[(_settings.back_led_brightness < 5) ? _settings.back_led_brightness : 4];
+
+  // Off setting or invalid PM2.5 → LEDs dark.
+  const float pm = _cached_measures.pm_a.pm_25;
+  if (scale == 0 || !_cached_measures.pm_a.is_pm_25_valid()) {
+    _svc.led.set_back_leds_rgb(0, 0, 0);
+    return;
+  }
+
+  // US EPA PM2.5 → AQI category colours (µg/m³ breakpoints).
+  uint8_t r = 0, g = 0, b = 0;
+  if (pm < 12.0f) {            // Good
+    r = 0;   g = 255; b = 0;
+  } else if (pm < 35.0f) {     // Moderate
+    r = 255; g = 255; b = 0;
+  } else if (pm < 55.0f) {     // Unhealthy for Sensitive Groups
+    r = 255; g = 128; b = 0;
+  } else if (pm < 150.0f) {    // Unhealthy
+    r = 255; g = 0;   b = 0;
+  } else if (pm < 250.0f) {    // Very Unhealthy
+    r = 128; g = 0;   b = 128;
+  } else {                      // Hazardous — saddle brown
+    r = 139; g = 69;  b = 19;
+  }
+
+  // Scale each channel by the brightness setting (0–255).
+  const uint8_t sr = static_cast<uint8_t>((static_cast<uint16_t>(r) * scale) / 255);
+  const uint8_t sg = static_cast<uint8_t>((static_cast<uint16_t>(g) * scale) / 255);
+  const uint8_t sb = static_cast<uint8_t>((static_cast<uint16_t>(b) * scale) / 255);
+  _svc.led.set_back_leds_rgb(sr, sg, sb);
 }
 
 bool Orchestrator::clear_data() {

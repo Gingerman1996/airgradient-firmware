@@ -172,6 +172,7 @@ private:
   uint8_t _setting_mode = 1;             // 1="Portable"
   uint8_t _setting_auto_lock = 0;        // 0="Off"
   uint8_t _setting_led_brightness = 4;   // 0=Off, 1=25%, 2=50%, 3=75%, 4=100%
+  uint8_t _setting_back_led_brightness = 4; // AQI back LEDs — same scale
 
   // Snackbar
   char _snackbar_text[48] = {};

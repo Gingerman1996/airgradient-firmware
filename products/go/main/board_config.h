@@ -100,7 +100,7 @@ inline constexpr gpio_num_t PIN_BUTTON_POWER = GPIO_NUM_5; // QON, active-low
 // ---------------------------------------------------------------------------
 
 inline constexpr gpio_num_t PIN_CAP_INT = GPIO_NUM_1; // active-low
-inline constexpr uint8_t TOUCH_DELTA_SENSE = 2;       // 0-7, 2 = 32x sensitivity
+inline constexpr uint8_t TOUCH_DELTA_SENSE = 1;       // 0-7, 1 = 64x sensitivity
 
 // ---------------------------------------------------------------------------
 // External watchdog (GPIO pulse)

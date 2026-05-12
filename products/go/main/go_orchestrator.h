@@ -114,7 +114,7 @@ private:
   mutable MeasuresAGo _cache_buf[UI_CHART_BUF_SIZE]{};
 
   // --- Constants ---
-  static constexpr uint32_t BMS_POLL_INTERVAL_MS = 60000;
+  static constexpr uint32_t BMS_POLL_INTERVAL_MS = 10000;
   // 1 Hz so PMID mode (Boost/PassThrough) re-syncs within ~1 s of a USB plug
   // event. EN_OTG is dropped on PassThrough entry, so a slower cadence leaves
   // the PM sensor's +5V rail dead for the polling window after USB removal.
@@ -149,6 +149,7 @@ private:
   void change_mode(OperatingMode new_mode);
   void apply_settings_change();
   void apply_led_brightness();
+  void apply_pm25_indicator();
   bool clear_data();
   bool factory_reset();
   void save_tag(uint8_t tag_index, const char *tag_label);

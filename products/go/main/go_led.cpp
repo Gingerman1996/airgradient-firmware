@@ -205,6 +205,19 @@ void LedService::set_indicator_brightness(uint8_t pwm) {
   _config.driver->set_channel(31, pwm);
 }
 
+void LedService::set_back_leds_rgb(uint8_t r, uint8_t g, uint8_t b) {
+  if (_config.driver == nullptr) {
+    return;
+  }
+  // Back-side RGB groups: LED3=OUT6/7/8, LED5=OUT12/13/14, LED6=OUT15/16/17,
+  // LED7=OUT18/19/20, LED9=OUT24/25/26.  Channel order within each group is
+  // B (lowest), G, R per v0.3 wiring.
+  static constexpr uint8_t BACK_B_CHANNELS[] = {6, 12, 15, 18, 24};
+  for (uint8_t b_ch : BACK_B_CHANNELS) {
+    _config.driver->set_rgb(b_ch, r, g, b);
+  }
+}
+
 void LedService::all_off() {
   if (!ready()) {
     return;
