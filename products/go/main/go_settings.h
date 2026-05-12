@@ -23,11 +23,16 @@ struct GoSettings {
   int inactivity_timeout_seconds = 5;
   int auto_lock_seconds = 0; // 0 = auto-lock disabled
 
-  // --- LED brightness (5 levels: 0=Off, 1=25%, 2=50%, 3=75%, 4=100%) ---
+  // --- LED brightness ---
   /// Front display indicator LEDs (LED25 / LED26 via LP5036 OUT30/31).
-  uint8_t led_brightness = 4;
+  /// 6-level 0–10 % scale: 0=Off, 1=2%, 2=4%, 3=6%, 4=8%, 5=10%.  The
+  /// display LEDs are small and very bright; even 10 % is visible
+  /// indoors so the user-facing scale is intentionally compressed.
+  /// Default = 5 (10 %, the brightest available option).
+  uint8_t led_brightness = 5;
 
   /// Back AQI LEDs (LED3/5/6/7/9 — PM2.5 colour indicator).
+  /// 5-level 0–100 % scale: 0=Off, 1=25%, 2=50%, 3=75%, 4=100%.
   uint8_t back_led_brightness = 4;
 
   // --- Admin / calibration mode ---

@@ -26,8 +26,16 @@ static constexpr uint8_t MODE_COUNT = 3;
 static const char *const AUTO_LOCK_OPTIONS[] = {"Off", "10 Seconds", "30 Seconds", "60 Seconds"};
 static constexpr uint8_t AUTO_LOCK_COUNT = 4;
 
+// AQI back LEDs use the wide 0–100 % range — visible from across a room
+// when colour-coding PM2.5.
 static const char *const LED_BRIGHTNESS_OPTIONS[] = {"Off", "25%", "50%", "75%", "100%"};
 static constexpr uint8_t LED_BRIGHTNESS_COUNT = 5;
+
+// Display indicator LEDs (LED25/LED26) are tiny and bright at 100 %, so the
+// user-facing scale is intentionally compressed to a 0–10 % window.
+static const char *const DISPLAY_LED_BRIGHTNESS_OPTIONS[] = {"Off", "2%", "4%",
+                                                             "6%", "8%", "10%"};
+static constexpr uint8_t DISPLAY_LED_BRIGHTNESS_COUNT = 6;
 
 // Tag labels (indices 2..11 in the tag list screen)
 static const char *const TAG_LABELS[] = {
@@ -324,7 +332,9 @@ void UIManager::sync_settings(const GoSettings &s) {
   else
     _setting_auto_lock = 3;
 
-  _setting_led_brightness = (s.led_brightness < LED_BRIGHTNESS_COUNT) ? s.led_brightness : 4;
+  _setting_led_brightness = (s.led_brightness < DISPLAY_LED_BRIGHTNESS_COUNT)
+                                ? s.led_brightness
+                                : static_cast<uint8_t>(DISPLAY_LED_BRIGHTNESS_COUNT - 1);
   _setting_back_led_brightness =
       (s.back_led_brightness < LED_BRIGHTNESS_COUNT) ? s.back_led_brightness : 4;
 }
@@ -383,9 +393,9 @@ void UIManager::apply_to_settings(GoSettings &settings) const {
   static constexpr int AUTO_LOCK_SECONDS[] = {0, 10, 30, 60};
   settings.auto_lock_seconds = (_setting_auto_lock < 4) ? AUTO_LOCK_SECONDS[_setting_auto_lock] : 0;
 
-  settings.led_brightness = (_setting_led_brightness < LED_BRIGHTNESS_COUNT)
+  settings.led_brightness = (_setting_led_brightness < DISPLAY_LED_BRIGHTNESS_COUNT)
                                 ? _setting_led_brightness
-                                : 4;
+                                : static_cast<uint8_t>(DISPLAY_LED_BRIGHTNESS_COUNT - 1);
   settings.back_led_brightness = (_setting_back_led_brightness < LED_BRIGHTNESS_COUNT)
                                      ? _setting_back_led_brightness
                                      : 4;
@@ -538,6 +548,7 @@ uint8_t UIManager::setting_option_count(uint8_t setting_id) const {
   case SETTING_AUTO_LOCK:
     return AUTO_LOCK_COUNT;
   case SETTING_LED_BRIGHTNESS:
+    return DISPLAY_LED_BRIGHTNESS_COUNT;
   case SETTING_BACK_LED_BRIGHTNESS:
     return LED_BRIGHTNESS_COUNT;
   default:
@@ -942,10 +953,14 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
     case SETTING_AUTO_LOCK:
       (void)snprintf(label, sizeof(label), "Auto Lock: %s", AUTO_LOCK_OPTIONS[_setting_auto_lock]);
       break;
-    case SETTING_LED_BRIGHTNESS:
+    case SETTING_LED_BRIGHTNESS: {
+      const uint8_t idx = _setting_led_brightness < DISPLAY_LED_BRIGHTNESS_COUNT
+                              ? _setting_led_brightness
+                              : (DISPLAY_LED_BRIGHTNESS_COUNT - 1);
       (void)snprintf(label, sizeof(label), "Display LED: %s",
-                     LED_BRIGHTNESS_OPTIONS[_setting_led_brightness]);
+                     DISPLAY_LED_BRIGHTNESS_OPTIONS[idx]);
       break;
+    }
     case SETTING_BACK_LED_BRIGHTNESS:
       (void)snprintf(label, sizeof(label), "AQI LED: %s",
                      LED_BRIGHTNESS_OPTIONS[_setting_back_led_brightness]);
@@ -1004,6 +1019,8 @@ void UIManager::populate_settings_choice_rows(DisplayValues &v) const {
     options = AUTO_LOCK_OPTIONS;
     break;
   case SETTING_LED_BRIGHTNESS:
+    options = DISPLAY_LED_BRIGHTNESS_OPTIONS;
+    break;
   case SETTING_BACK_LED_BRIGHTNESS:
     options = LED_BRIGHTNESS_OPTIONS;
     break;

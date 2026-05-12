@@ -33,7 +33,11 @@ bool is_auto_lock_valid(int value) {
   return value == 0 || value == 10 || value == 30 || value == 60;
 }
 
-bool is_led_brightness_valid(int value) { return value >= 0 && value <= 4; }
+// Display LED uses a 6-level 0–10 % scale (0=Off, 1=2%, 2=4%, 3=6%, 4=8%,
+// 5=10%) whereas the AQI back LEDs use a 5-level 0–100 % scale.  This
+// validator accepts both ranges; the UI layer enforces per-field option
+// counts.
+bool is_led_brightness_valid(int value) { return value >= 0 && value <= 5; }
 
 bool is_device_name_valid(const std::string &value) { return !value.empty() && value.size() <= 64; }
 

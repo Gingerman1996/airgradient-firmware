@@ -805,9 +805,10 @@ void Orchestrator::apply_settings_change() {
 }
 
 void Orchestrator::apply_led_brightness() {
-  // 0=Off, 1=25%, 2=50%, 3=75%, 4=100%
-  static constexpr uint8_t PWM_MAP[5] = {0, 64, 128, 191, 255};
-  const uint8_t idx = (_settings.led_brightness < 5) ? _settings.led_brightness : 4;
+  // Display LED: 6-level 0–10 % scale.
+  //   0=Off, 1=2%, 2=4%, 3=6%, 4=8%, 5=10%   →   PWM 0, 5, 10, 15, 20, 26
+  static constexpr uint8_t PWM_MAP[6] = {0, 5, 10, 15, 20, 26};
+  const uint8_t idx = (_settings.led_brightness < 6) ? _settings.led_brightness : 5;
   _svc.led.set_indicator_brightness(PWM_MAP[idx]);
   // Re-apply the back-LED PM2.5 colour so a brightness change takes effect
   // immediately without waiting for the next sensor update.
@@ -815,7 +816,8 @@ void Orchestrator::apply_led_brightness() {
 }
 
 void Orchestrator::apply_pm25_indicator() {
-  // 0=Off, 1=25%, 2=50%, 3=75%, 4=100% — same map as apply_led_brightness().
+  // Back AQI LEDs: 5-level 0–100 % scale (independent of Display LED scale).
+  //   0=Off, 1=25%, 2=50%, 3=75%, 4=100%   →   PWM 0, 64, 128, 191, 255
   static constexpr uint8_t PWM_MAP[5] = {0, 64, 128, 191, 255};
   const uint8_t scale =
       PWM_MAP[(_settings.back_led_brightness < 5) ? _settings.back_led_brightness : 4];
