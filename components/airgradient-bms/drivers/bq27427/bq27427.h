@@ -91,6 +91,30 @@ public:
   /// @return true on success.
   bool control_subcommand(uint16_t subcmd, uint16_t &result);
 
+  // -- Data Memory configuration --------------------------------------------
+  // The chip's Impedance Track algorithm needs to know the cell's nominal
+  // capacity (and chemistry).  These methods access "Data Memory" via the
+  // Extended Command interface (TRM §4.1 / §6).
+
+  /// Read the current Design Capacity (mAh) from data memory.  Does not enter
+  /// CFGUPDATE mode and so does not perturb the gauge's learned state.
+  /// @return true on success.
+  bool read_design_capacity_mah(uint16_t &out);
+
+  /// Write a new Design Capacity (mAh) to data memory if the current value
+  /// differs from `mah`.  Drives the full CFGUPDATE → write block → checksum
+  /// → SOFT_RESET sequence (TRM §4.1).  Idempotent: a no-op when already
+  /// correct so it's safe to call on every boot.  Skips UNSEAL/SEAL — the
+  /// chip ships unsealed from the factory.
+  /// @return true on success or when no change was needed.
+  bool set_design_capacity_mah(uint16_t mah);
+
+  /// Issue `Control(RESET = 0x0041)` from inside CFGUPDATE.  Per TRM §5.1.16
+  /// this performs a full device reset and reloads all RAM data memory from
+  /// the chip's ROM defaults.  Used to recover when data memory has been
+  /// corrupted by a partial / aborted CFGUPDATE write.
+  bool reset_to_factory_defaults();
+
 private:
   i2c_master_bus_handle_t _bus = nullptr;
   i2c_master_dev_handle_t _dev = nullptr;
@@ -104,6 +128,26 @@ private:
   /// Write a 16-bit standard-command word.  Used for Control() subcommand
   /// selection (cmd=0x00 → write LSB+MSB).
   bool _write_word(uint8_t cmd, uint16_t value);
+
+  /// Read a single 8-bit register.  Used for Data Memory block access.
+  bool _read_byte(uint8_t reg, uint8_t &out);
+
+  /// Write a single 8-bit register.
+  bool _write_byte(uint8_t reg, uint8_t value);
+
+  /// Read `len` bytes starting at `reg` (auto-increment) in one transaction.
+  bool _read_block(uint8_t reg, uint8_t *buf, size_t len);
+
+  /// Write `len` bytes starting at `reg` (auto-increment) in one transaction.
+  bool _write_block(uint8_t reg, const uint8_t *buf, size_t len);
+
+  /// Set up the data memory block window: select subclass, block offset,
+  /// and clear BlockDataControl so the chip honours raw block I/O.
+  bool _select_data_block(uint8_t subclass, uint8_t block_offset);
+
+  /// Poll the Flags() register until the CFGUPDATE bit (bit 4) matches
+  /// `expected_set`.  Returns false on timeout.
+  bool _wait_cfgupdate_flag(bool expected_set, uint32_t timeout_ms);
 };
 
 #endif // BQ27427_H

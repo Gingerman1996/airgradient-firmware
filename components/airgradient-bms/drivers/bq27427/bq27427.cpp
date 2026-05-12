@@ -28,6 +28,23 @@ constexpr uint8_t CMD_FULL_CHARGE_CAP = 0x2E;   // Filtered
 
 // Control() subcommands (TRM §4).
 constexpr uint16_t CTRL_DEVICE_TYPE = 0x0001;
+constexpr uint16_t CTRL_SET_CFGUPDATE = 0x0013;
+constexpr uint16_t CTRL_RESET = 0x0041;
+constexpr uint16_t CTRL_SOFT_RESET = 0x0042;
+
+// Extended command interface (TRM §6).
+constexpr uint8_t CMD_DATA_BLOCK_CLASS = 0x3E;
+constexpr uint8_t CMD_DATA_BLOCK = 0x3F;
+constexpr uint8_t CMD_BLOCK_DATA_BASE = 0x40;
+constexpr uint8_t CMD_BLOCK_DATA_CHECKSUM = 0x60;
+constexpr uint8_t CMD_BLOCK_DATA_CONTROL = 0x61;
+
+// Subclass / offsets in Data Memory (TRM §7.4.2.3.5).
+constexpr uint8_t SUBCLASS_STATE = 0x52;     // 82 decimal
+constexpr uint8_t OFFSET_DESIGN_CAPACITY = 6; // bytes 6/7 within block 0
+
+// Flags() bit 4 = CFGUPDATE mode active.
+constexpr uint16_t FLAG_CFGUPDATE = (1u << 4);
 
 // Per datasheet §6.3.1.3, the Control() subcommand result is not ready
 // immediately after the write — but the spec says only that read-WRITE
@@ -64,7 +81,11 @@ bool BQ27427::init() {
       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
       .device_address = _config.address,
       .scl_speed_hz = _config.scl_speed_hz,
-      .scl_wait_us = 0,
+      // Datasheet §6.3.1.4: the gauge can clock-stretch up to ~4 ms during
+      // INITIALIZATION / NORMAL modes while it performs data-flow control,
+      // and longer during Data Memory writes that trigger flash commits.
+      // 0 = default-no-wait would cause ESP_ERR_INVALID_STATE on those.
+      .scl_wait_us = 20000,
       .flags = {},
   };
   err = i2c_master_bus_add_device(_bus, &dev_cfg, &_dev);
@@ -174,6 +195,231 @@ bool BQ27427::_read_word(uint8_t cmd, uint16_t &out) {
   }
   // BQ27xxx standard commands are little-endian (LSB at cmd, MSB at cmd+1).
   out = static_cast<uint16_t>(buf[0]) | (static_cast<uint16_t>(buf[1]) << 8);
+  return true;
+}
+
+bool BQ27427::_read_byte(uint8_t reg, uint8_t &out) {
+  if (_dev == nullptr) {
+    return false;
+  }
+  esp_err_t err = i2c_master_transmit_receive(_dev, &reg, 1, &out, 1, _config.timeout_ms);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "read byte 0x%02X failed: %s", reg, esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+bool BQ27427::_write_byte(uint8_t reg, uint8_t value) {
+  if (_dev == nullptr) {
+    return false;
+  }
+  uint8_t buf[2] = {reg, value};
+  esp_err_t err = i2c_master_transmit(_dev, buf, sizeof(buf), _config.timeout_ms);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "write byte 0x%02X failed: %s", reg, esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+bool BQ27427::_read_block(uint8_t reg, uint8_t *buf, size_t len) {
+  if (_dev == nullptr || buf == nullptr || len == 0) {
+    return false;
+  }
+  esp_err_t err = i2c_master_transmit_receive(_dev, &reg, 1, buf, len, _config.timeout_ms);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "read block 0x%02X len=%u failed: %s", reg, (unsigned)len,
+             esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+bool BQ27427::_write_block(uint8_t reg, const uint8_t *buf, size_t len) {
+  if (_dev == nullptr || buf == nullptr || len == 0 || len > 64) {
+    return false;
+  }
+  uint8_t tx[65];
+  tx[0] = reg;
+  for (size_t i = 0; i < len; ++i) {
+    tx[1 + i] = buf[i];
+  }
+  esp_err_t err = i2c_master_transmit(_dev, tx, len + 1, _config.timeout_ms);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "write block 0x%02X len=%u failed: %s", reg, (unsigned)len,
+             esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+bool BQ27427::_select_data_block(uint8_t subclass, uint8_t block_offset) {
+  // TRM §4.1 step 4–6: enable raw block access, then point at the right
+  // subclass + 32-byte block within it.
+  if (!_write_byte(CMD_BLOCK_DATA_CONTROL, 0x00)) {
+    return false;
+  }
+  if (!_write_byte(CMD_DATA_BLOCK_CLASS, subclass)) {
+    return false;
+  }
+  if (!_write_byte(CMD_DATA_BLOCK, block_offset)) {
+    return false;
+  }
+  return true;
+}
+
+bool BQ27427::_wait_cfgupdate_flag(bool expected_set, uint32_t timeout_ms) {
+  const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+  while (true) {
+    uint16_t flags = 0;
+    if (read_flags(flags)) {
+      const bool now_set = (flags & FLAG_CFGUPDATE) != 0;
+      if (now_set == expected_set) {
+        return true;
+      }
+    }
+    if ((int32_t)(xTaskGetTickCount() - deadline) >= 0) {
+      ESP_LOGW(TAG, "CFGUPDATE flag did not become %s within %ums",
+               expected_set ? "set" : "clear", timeout_ms);
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(25));
+  }
+}
+
+bool BQ27427::read_design_capacity_mah(uint16_t &out) {
+  // No CFGUPDATE needed for reads — just point at the block and read.  TRM
+  // §4.1: offsets 0–31 live in block 0.  Data Memory is MSB-first.
+  //
+  // The chip needs a short settle delay after writing DataBlock() (0x3F)
+  // before the new block's contents appear at 0x40..0x5F; without it, the
+  // first single-byte read can return stale 0x00 even though subsequent
+  // reads are correct.  Using a single 2-byte transaction also avoids the
+  // per-byte buffer-coherence issue.
+  if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(5));
+  uint8_t pair[2] = {0, 0};
+  if (!_read_block(CMD_BLOCK_DATA_BASE + OFFSET_DESIGN_CAPACITY, pair, sizeof(pair))) {
+    return false;
+  }
+  out = (static_cast<uint16_t>(pair[0]) << 8) | pair[1];
+  return true;
+}
+
+bool BQ27427::set_design_capacity_mah(uint16_t mah) {
+  if (_dev == nullptr) {
+    return false;
+  }
+
+  uint16_t current = 0;
+  if (read_design_capacity_mah(current) && current == mah) {
+    ESP_LOGI(TAG, "Design Capacity already %umAh — no change", mah);
+    return true;
+  }
+  ESP_LOGI(TAG, "Updating Design Capacity %u → %u mAh", current, mah);
+
+  // 1. Enter CFGUPDATE mode (TRM §4.1 step 2/3).
+  if (!_write_word(CMD_CONTROL, CTRL_SET_CFGUPDATE)) {
+    return false;
+  }
+  if (!_wait_cfgupdate_flag(true, 2000)) {
+    ESP_LOGW(TAG, "Could not enter CFGUPDATE — aborting Design Capacity write");
+    return false;
+  }
+
+  // 2. Point at State subclass, block 0 (TRM §4.1 step 4–6).
+  if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10)); // let the chip copy DM → command buffer
+
+  // 3. Read the entire 32-byte block in one transaction.  More robust than
+  //    using the replacement-checksum formula: we know every byte, so the
+  //    final checksum is computed fresh from the modified block.
+  uint8_t block[32] = {};
+  if (!_read_block(CMD_BLOCK_DATA_BASE, block, sizeof(block))) {
+    return false;
+  }
+  ESP_LOGI(TAG, "DM block (old): DC=0x%02X%02X DE=0x%02X%02X TermV=0x%02X%02X",
+           block[6], block[7], block[8], block[9], block[10], block[11]);
+
+  // 4. Modify the Design Capacity bytes locally (MSB at offset 6, LSB at 7).
+  block[OFFSET_DESIGN_CAPACITY]     = static_cast<uint8_t>((mah >> 8) & 0xFF);
+  block[OFFSET_DESIGN_CAPACITY + 1] = static_cast<uint8_t>(mah & 0xFF);
+
+  // 5. Write the full 32-byte block back in one transaction.
+  if (!_write_block(CMD_BLOCK_DATA_BASE, block, sizeof(block))) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10)); // settle before commit write
+
+  // 6. Compute fresh checksum: 255 - (sum_of_block_bytes mod 256).
+  uint16_t sum = 0;
+  for (size_t i = 0; i < sizeof(block); ++i) {
+    sum += block[i];
+  }
+  const uint8_t new_csum = static_cast<uint8_t>(255 - (sum & 0xFF));
+  ESP_LOGI(TAG, "DM block (new): DC=0x%02X%02X sum=0x%04X csum=0x%02X", block[6], block[7],
+           sum, new_csum);
+
+  // 7. Write checksum — this is the commit that transfers BlockData() to RAM.
+  if (!_write_byte(CMD_BLOCK_DATA_CHECKSUM, new_csum)) {
+    // Diagnostic: try to read 0x60 back to see what the chip actually has now.
+    uint8_t echo = 0;
+    if (_read_byte(CMD_BLOCK_DATA_CHECKSUM, echo)) {
+      ESP_LOGW(TAG, "checksum write failed; readback=0x%02X (expected 0x%02X)", echo, new_csum);
+    } else {
+      ESP_LOGW(TAG, "checksum write failed and readback also failed");
+    }
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(20)); // allow chip to commit before SOFT_RESET
+
+  // 8. Exit CFGUPDATE and let the chip resume gauging (TRM §4.1 step 12/13).
+  if (!_write_word(CMD_CONTROL, CTRL_SOFT_RESET)) {
+    return false;
+  }
+  if (!_wait_cfgupdate_flag(false, 2000)) {
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Design Capacity now %umAh (csum=0x%02X)", mah, new_csum);
+  return true;
+}
+
+bool BQ27427::reset_to_factory_defaults() {
+  // Per TRM §5.1.16, RESET should be issued from inside CFGUPDATE so the chip
+  // is in a known state when reinitialising RAM from ROM.
+  ESP_LOGW(TAG, "Resetting fuel gauge to factory defaults (Control RESET=0x0041)");
+
+  if (!_write_word(CMD_CONTROL, CTRL_SET_CFGUPDATE)) {
+    return false;
+  }
+  if (!_wait_cfgupdate_flag(true, 2000)) {
+    ESP_LOGW(TAG, "Could not enter CFGUPDATE — aborting RESET");
+    return false;
+  }
+
+  if (!_write_word(CMD_CONTROL, CTRL_RESET)) {
+    return false;
+  }
+  // The chip re-initialises RAM from ROM, then enters INITIALIZATION and
+  // automatically exits CFGUPDATE once the copy is done.  Datasheet figure 2-1.
+  vTaskDelay(pdMS_TO_TICKS(500));
+  if (!_wait_cfgupdate_flag(false, 3000)) {
+    ESP_LOGW(TAG, "CFGUPDATE did not clear after RESET");
+    return false;
+  }
+
+  uint16_t dc = 0;
+  if (read_design_capacity_mah(dc)) {
+    ESP_LOGI(TAG, "Reset complete — Design Capacity is now %umAh (ROM default)", dc);
+  } else {
+    ESP_LOGW(TAG, "Reset complete but could not read back Design Capacity");
+  }
   return true;
 }
 

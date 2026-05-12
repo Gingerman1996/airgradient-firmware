@@ -177,6 +177,31 @@ void GoHardwareBoard::init_bms() {
 
   _fuel_gauge = new BQ27427(_i2c_bus, {.address = I2C_ADDR_FUEL_GAUGE});
   if (_fuel_gauge->init()) {
+    // Recovery path: detect a corrupted fuel-gauge state from a prior aborted
+    // CFGUPDATE write and reset RAM back to ROM defaults.  Two indicators:
+    //   1. Design Capacity out of the sane 500..8000 mAh range (e.g. the
+    //      partially-written 208 mAh = 0x00D0 leftover from a previous run).
+    //   2. FullChargeCapacity out of range (the chip's Qmax is independent
+    //      of Design Capacity and can be corrupted on its own — e.g. 32507).
+    uint16_t dc = 0;
+    uint16_t fcc = 0;
+    const bool dc_ok = _fuel_gauge->read_design_capacity_mah(dc);
+    const bool fcc_ok = _fuel_gauge->read_full_charge_capacity_mah(fcc);
+    if (dc_ok) {
+      AG_LOGI(TAG, "BQ27427: current Design Capacity = %umAh", dc);
+    }
+    if (fcc_ok) {
+      AG_LOGI(TAG, "BQ27427: current FullChargeCapacity = %umAh", fcc);
+    }
+    const bool dc_bad = dc_ok && (dc < 500 || dc > 8000);
+    const bool fcc_bad = fcc_ok && fcc > 8500;
+    if (dc_bad || fcc_bad) {
+      AG_LOGW(TAG, "BQ27427: corrupted state (dc_bad=%d fcc_bad=%d) — resetting",
+              dc_bad, fcc_bad);
+      if (!_fuel_gauge->reset_to_factory_defaults()) {
+        AG_LOGW(TAG, "BQ27427: factory reset failed");
+      }
+    }
     uint8_t soc = 0;
     uint16_t mv = 0;
     int16_t ma = 0;
