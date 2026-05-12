@@ -51,8 +51,9 @@ static constexpr uint8_t SETTING_LED_BRIGHTNESS = 8;
 static constexpr uint8_t SETTING_BACK_LED_BRIGHTNESS = 9;
 static constexpr uint8_t SETTING_CO2_CALIBRATION = 10;
 static constexpr uint8_t SETTING_CLEAR_DATA = 11;
+static constexpr uint8_t SETTING_EXIT_ADMIN = 12; // only shown when admin_mode
 
-static constexpr uint8_t SETTINGS_TOTAL = 12;       // indices 0..11
+static constexpr uint8_t SETTINGS_TOTAL = 13;       // indices 0..12
 static constexpr uint8_t TAG_LIST_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t MAIN_MENU_TOTAL = 4;       // indices 0..3
 static constexpr uint8_t CONFIRM_TOTAL = 5;         // indices 0..4
@@ -469,8 +470,10 @@ void UIManager::move_menu(int delta) {
 }
 
 void UIManager::move_settings(int delta) {
-  // Circular navigation, page-based scroll.
-  _settings_index = (uint8_t)wrap((int)_settings_index + delta, SETTINGS_TOTAL);
+  // Circular navigation, page-based scroll.  Skip the Exit Admin row when
+  // admin mode is off so it isn't selectable.
+  const uint8_t total = _admin_mode ? SETTINGS_TOTAL : (SETTINGS_TOTAL - 1);
+  _settings_index = (uint8_t)wrap((int)_settings_index + delta, total);
   _settings_scroll_start = page_scroll(_settings_index);
 }
 
@@ -715,6 +718,11 @@ UIActionResult UIManager::dispatch_settings(InputSource source, InputType type) 
                _settings_index == SETTING_CLEAR_DATA) {
       // Open confirm dialog for action items
       open_confirm(_settings_index);
+    } else if (_settings_index == SETTING_EXIT_ADMIN && _admin_mode) {
+      // Admin-mode-only action: orchestrator clears the flag, saves,
+      // and shows a snackbar.  Returns to the Settings screen.
+      _admin_mode = false; // local mirror — orchestrator will save settings
+      result.action = UIAction::ExitAdminMode;
     } else if (_settings_index >= SETTING_UNITS && _settings_index <= SETTING_BACK_LED_BRIGHTNESS) {
       // Open choice screen for this setting
       open_settings_choice(_settings_index);
@@ -947,6 +955,13 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
       break;
     case SETTING_CLEAR_DATA:
       (void)snprintf(label, sizeof(label), "Data: Clear Data");
+      break;
+    case SETTING_EXIT_ADMIN:
+      // Hidden in production — render only when admin mode is active.
+      if (!_admin_mode) {
+        continue;
+      }
+      (void)snprintf(label, sizeof(label), "Exit Admin Mode");
       break;
     default:
       label[0] = '\0';

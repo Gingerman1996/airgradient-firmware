@@ -30,6 +30,14 @@ struct GoSettings {
   /// Back AQI LEDs (LED3/5/6/7/9 — PM2.5 colour indicator).
   uint8_t back_led_brightness = 4;
 
+  // --- Admin / calibration mode ---
+  /// When true, factory-calibration affordances are exposed (e.g. the
+  /// charge-done melody + 500 s rest countdown + unplug-me alert used to
+  /// guide BQ27427 Qmax learning).  Default false for production — those
+  /// affordances are noise for end users.  Entered by a deliberate touch
+  /// gesture, exited from the Settings menu.
+  bool admin_mode = false;
+
   // --- Identity ---
   std::string device_name = "airgradient-go";
 };

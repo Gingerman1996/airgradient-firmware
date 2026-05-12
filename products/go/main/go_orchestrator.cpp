@@ -137,6 +137,7 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
 
   // --- Common tail ---
   _svc.ui_manager.sync_settings(_settings);
+  _svc.ui_manager.set_admin_mode(_settings.admin_mode);
   apply_led_brightness();
 
   if (!handoff.measurement_completed) {
@@ -277,6 +278,15 @@ void Orchestrator::check_timers() {
     _last_ext_wdt_ms = now;
   }
 
+  // --- Admin-entry deadline ---
+  // The input handler enforces the per-step deadline on each touch event,
+  // but if the user simply does nothing after arming we'd be stuck.  This
+  // tick catches the no-input timeout case.
+  if (_admin_entry_state != AdminEntryState::None && _admin_entry_deadline_ms != 0 &&
+      static_cast<int32_t>(now - _admin_entry_deadline_ms) >= 0) {
+    abort_admin_entry("timeout");
+  }
+
   // --- Snackbar refresh timer ---
   // Ensures a follow-up display update after the snackbar expires so it is
   // visually cleared even when no other events trigger update_display().
@@ -324,7 +334,8 @@ void Orchestrator::on_bms_status_timer() {
       request_background_display_update();
     }
 
-    // Charge-done UX sequence:
+    // Charge-done UX sequence — only runs in admin mode (calibration
+    // affordance, hidden from production users):
     //   1. BMS transitions to NotCharging while USB is plugged in →
     //      play a short "charge done" melody once, start a 500 s rest
     //      countdown (matches the BQ27427 ResRelax Time so the fuel gauge
@@ -335,7 +346,7 @@ void Orchestrator::on_bms_status_timer() {
     //   3. Anything else (charging resumes, USB removed) cancels both
     //      and clears state.
     const bool plugged_in = bms_power_source_has_external_input(status.power_source);
-    const bool in_rest_state = !now_charging && plugged_in;
+    const bool in_rest_state = _settings.admin_mode && !now_charging && plugged_in;
     const bool was_in_rest_state = (_charge_done_start_ms != 0);
     const uint32_t now_ms = static_cast<uint32_t>(RTOS::get_time_ms());
 
@@ -603,6 +614,13 @@ void Orchestrator::on_input(const InputEventData &input) {
     return;
   }
 
+  // Admin-mode entry gesture takes priority once armed — it consumes touch
+  // input until success / abort.  This must run before the UI dispatch.
+  if (consume_admin_entry_input(input)) {
+    update_display();
+    return;
+  }
+
   // Unlocked: white LED flash on accepted touch — 30 % brightness for 100 ms
   switch (input.source) {
   case InputSource::TouchDown:
@@ -616,6 +634,18 @@ void Orchestrator::on_input(const InputEventData &input) {
     break;
   default:
     break;
+  }
+
+  // Detect the 5-rapid-Select-taps admin-entry pattern.  Runs in parallel
+  // with normal UI dispatch — the taps still navigate the UI; the gesture
+  // is detected on top of that.  Arming only happens when we're not
+  // already mid-sequence (the consume_admin_entry_input branch above
+  // covers that case).
+  if (input.source == InputSource::TouchEnter && input.type == InputType::ShortPress) {
+    const uint32_t now_ms = static_cast<uint32_t>(RTOS::get_time_ms());
+    if (record_select_tap_check_pattern(now_ms)) {
+      arm_admin_entry();
+    }
   }
 
   // Unlocked: forward to UI Manager
@@ -643,6 +673,13 @@ void Orchestrator::on_input(const InputEventData &input) {
     break;
   case UIAction::SaveTag:
     save_tag(result.tag_index, result.tag_label);
+    break;
+  case UIAction::ExitAdminMode:
+    _settings.admin_mode = false;
+    save_go_settings(_config_store, _settings);
+    _svc.ui_manager.set_admin_mode(false);
+    _svc.ui_manager.show_snackbar("Admin mode off");
+    AG_LOGI(TAG, "admin mode exited via Settings menu");
     break;
   case UIAction::None:
     break;
@@ -811,6 +848,105 @@ void Orchestrator::apply_pm25_indicator() {
   const uint8_t sg = static_cast<uint8_t>((static_cast<uint16_t>(g) * scale) / 255);
   const uint8_t sb = static_cast<uint8_t>((static_cast<uint16_t>(b) * scale) / 255);
   _svc.led.set_back_leds_rgb(sr, sg, sb);
+}
+
+// ---------------------------------------------------------------------------
+// Admin-mode entry gesture
+// ---------------------------------------------------------------------------
+
+bool Orchestrator::record_select_tap_check_pattern(uint32_t now_ms) {
+  // Store this tap in the ring buffer (oldest entry is overwritten).
+  _admin_tap_times[_admin_tap_idx] = now_ms;
+  _admin_tap_idx = static_cast<uint8_t>((_admin_tap_idx + 1) % ADMIN_TAP_COUNT);
+
+  // Pattern: the OLDEST entry in the buffer is within ADMIN_TAP_WINDOW_MS
+  // of `now_ms`.  Because the ring buffer always holds the last N timestamps
+  // (after at least N taps), the oldest is at the next-to-write slot.
+  const uint32_t oldest = _admin_tap_times[_admin_tap_idx];
+  if (oldest == 0) {
+    return false; // buffer not full yet — haven't seen N taps total
+  }
+  return (now_ms - oldest) <= ADMIN_TAP_WINDOW_MS;
+}
+
+void Orchestrator::arm_admin_entry() {
+  _admin_entry_state = AdminEntryState::ArmedExpectingLeft;
+  _admin_entry_deadline_ms =
+      static_cast<uint32_t>(RTOS::get_time_ms()) + ADMIN_STEP_TIMEOUT_MS;
+  _svc.led.set_charge_done_alert(true); // reuse the LED8 blinker
+  AG_LOGI(TAG, "admin entry armed — press Left then Right within %u s",
+          ADMIN_STEP_TIMEOUT_MS / 1000);
+}
+
+void Orchestrator::complete_admin_entry() {
+  _admin_entry_state = AdminEntryState::None;
+  _admin_entry_deadline_ms = 0;
+  _svc.led.set_charge_done_alert(false);
+  _svc.led.flash_led8_green(ADMIN_SUCCESS_FLASH_MS);
+
+  _settings.admin_mode = true;
+  save_go_settings(_config_store, _settings);
+  _svc.ui_manager.set_admin_mode(true);
+  _svc.ui_manager.show_snackbar("Admin mode on");
+  AG_LOGI(TAG, "admin entry complete — admin_mode=true");
+}
+
+void Orchestrator::abort_admin_entry(const char *reason) {
+  if (_admin_entry_state == AdminEntryState::None) {
+    return;
+  }
+  AG_LOGI(TAG, "admin entry aborted: %s", reason);
+  _admin_entry_state = AdminEntryState::None;
+  _admin_entry_deadline_ms = 0;
+  _svc.led.set_charge_done_alert(false);
+  // Clear tap history so a partial gesture doesn't bleed into a future one.
+  for (uint8_t i = 0; i < ADMIN_TAP_COUNT; ++i) {
+    _admin_tap_times[i] = 0;
+  }
+  _admin_tap_idx = 0;
+}
+
+bool Orchestrator::consume_admin_entry_input(const InputEventData &input) {
+  if (_admin_entry_state == AdminEntryState::None) {
+    return false;
+  }
+  // Check the per-step deadline first — late inputs abort the sequence.
+  const uint32_t now_ms = static_cast<uint32_t>(RTOS::get_time_ms());
+  if (_admin_entry_deadline_ms != 0 &&
+      static_cast<int32_t>(now_ms - _admin_entry_deadline_ms) >= 0) {
+    abort_admin_entry("timeout");
+    return true; // consumed (the late input gets dropped along with the abort)
+  }
+  // Only short-press touch events drive the sequence.  Button events fall
+  // through to the normal handler.
+  if (input.type != InputType::ShortPress) {
+    return false;
+  }
+  if (input.source != InputSource::TouchUp && input.source != InputSource::TouchDown &&
+      input.source != InputSource::TouchEnter) {
+    return false;
+  }
+  switch (_admin_entry_state) {
+  case AdminEntryState::ArmedExpectingLeft:
+    if (input.source == InputSource::TouchUp) {
+      _admin_entry_state = AdminEntryState::ArmedExpectingRight;
+      _admin_entry_deadline_ms = now_ms + ADMIN_STEP_TIMEOUT_MS;
+      AG_LOGI(TAG, "admin entry: Left ok — press Right");
+    } else {
+      abort_admin_entry("wrong key (expected Left)");
+    }
+    return true;
+  case AdminEntryState::ArmedExpectingRight:
+    if (input.source == InputSource::TouchDown) {
+      complete_admin_entry();
+    } else {
+      abort_admin_entry("wrong key (expected Right)");
+    }
+    return true;
+  case AdminEntryState::None:
+  default:
+    return false;
+  }
 }
 
 bool Orchestrator::clear_data() {

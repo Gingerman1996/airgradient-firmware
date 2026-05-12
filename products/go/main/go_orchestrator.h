@@ -117,6 +117,21 @@ private:
   /// Prevents repeating the alert every poll cycle.
   bool _charge_done_alerted = false;
 
+  // --- Admin-mode entry gesture ---
+  // The tap-count constant is declared here (not in the "Constants" block
+  // below) so it precedes the array dimension that uses it.
+  static constexpr uint8_t ADMIN_TAP_COUNT = 5;
+  enum class AdminEntryState : uint8_t {
+    None,                  ///< No gesture in progress.
+    ArmedExpectingLeft,    ///< 5 taps detected; LED8 blinks; waiting for Left.
+    ArmedExpectingRight,   ///< Left received; waiting for Right.
+  };
+  AdminEntryState _admin_entry_state = AdminEntryState::None;
+  uint32_t _admin_entry_deadline_ms = 0; ///< 0 = no active deadline.
+  /// Ring buffer of recent Select-tap timestamps (millisecond uptime).
+  uint32_t _admin_tap_times[ADMIN_TAP_COUNT] = {0};
+  uint8_t _admin_tap_idx = 0;
+
   // --- Display buffers (mutable for const build_context) ---
   mutable Measures _display_measures{};
   mutable MeasuresAGo _cache_buf[UI_CHART_BUF_SIZE]{};
@@ -138,6 +153,15 @@ private:
   // fuel gauge has its OCV-at-rest reading captured before the user
   // disconnects.
   static constexpr uint32_t CHARGE_REST_TIMEOUT_MS = 500000;
+
+  // Admin-mode entry gesture: ADMIN_TAP_COUNT rapid Select taps within
+  // ADMIN_TAP_WINDOW_MS arms the sequence; then each subsequent step
+  // (Left, Right) must complete within ADMIN_STEP_TIMEOUT_MS.  On success
+  // LED8 flashes green for ADMIN_SUCCESS_FLASH_MS.  (ADMIN_TAP_COUNT lives
+  // up top with the private state because it's used as an array dimension.)
+  static constexpr uint32_t ADMIN_TAP_WINDOW_MS = 3000;
+  static constexpr uint32_t ADMIN_STEP_TIMEOUT_MS = 5000;
+  static constexpr uint32_t ADMIN_SUCCESS_FLASH_MS = 1000;
 
   // --- Event dispatch ---
   void dispatch(const Event &event);
@@ -165,6 +189,25 @@ private:
   void apply_settings_change();
   void apply_led_brightness();
   void apply_pm25_indicator();
+
+  // --- Admin-mode entry gesture helpers ---
+  /// Record one Select tap and detect the rapid-tap "arm" pattern.
+  /// Returns true if this tap completed the pattern (admin entry should
+  /// arm); false otherwise.
+  bool record_select_tap_check_pattern(uint32_t now_ms);
+
+  /// Try to consume `input` as part of the admin-entry sequence.
+  /// Returns true if the input was consumed (caller must not forward it
+  /// to the UI manager).  When the sequence is not active or this input
+  /// is irrelevant, returns false.
+  bool consume_admin_entry_input(const InputEventData &input);
+
+  /// Enter the armed state: LED8 blinks, deadline timer starts, log line.
+  void arm_admin_entry();
+  /// Successful sequence — persist admin_mode=true, flash LED8 green.
+  void complete_admin_entry();
+  /// Abandon any pending sequence (timeout, wrong key, or external).
+  void abort_admin_entry(const char *reason);
   bool clear_data();
   bool factory_reset();
   void save_tag(uint8_t tag_index, const char *tag_label);

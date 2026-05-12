@@ -143,6 +143,12 @@ public:
   /// with the worker queue.
   void set_charge_done_alert(bool active);
 
+  /// Briefly light LED8 solid green, then turn it off after `duration_ms`.
+  /// Cancels any active blink first.  Used as the "admin-entry-armed"
+  /// confirmation feedback.  Bypasses the worker queue (same channels as
+  /// the blink path).
+  void flash_led8_green(uint32_t duration_ms);
+
   bool ready() const { return _config.driver != nullptr && _queue != nullptr; }
 
 private:
@@ -157,11 +163,14 @@ private:
   static void _map(Led led, uint8_t &b_ch, uint8_t &g_ch, uint8_t &r_ch);
   void _set_led_rgb(Led led, uint8_t r, uint8_t g, uint8_t b);
 
-  // --- Charge-done alert blink (LED8) ---
+  // --- LED8 effects (blink + one-shot flash) ---
   LedTimerHandle _alert_timer = nullptr;
   bool _alert_active = false;
   bool _alert_phase = false; ///< Current toggle state (on/off)
 
+  LedTimerHandle _flash_timer = nullptr; ///< One-shot turn-off for flash_led8_green
+
   static void _alert_timer_cb(LedTimerHandle timer);
+  static void _flash_timer_cb(LedTimerHandle timer);
   void _alert_tick();
 };

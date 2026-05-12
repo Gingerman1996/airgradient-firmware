@@ -259,6 +259,46 @@ void LedService::_alert_tick() {
   }
 }
 
+void LedService::flash_led8_green(uint32_t duration_ms) {
+#ifndef TEST_HOST
+  if (_config.driver == nullptr) {
+    return;
+  }
+  // Cancel any active blink so the green flash isn't immediately overwritten.
+  if (_alert_active) {
+    _alert_active = false;
+    if (_alert_timer != nullptr) {
+      xTimerStop(_alert_timer, 0);
+    }
+  }
+  // R=0 G=255 B=0 — bright green
+  _config.driver->set_rgb(21, 0, 255, 0);
+  // Schedule a one-shot timer to turn the LED off.
+  if (_flash_timer == nullptr) {
+    _flash_timer = xTimerCreate("led_flash", pdMS_TO_TICKS(duration_ms), pdFALSE,
+                                static_cast<void *>(this), &LedService::_flash_timer_cb);
+  } else {
+    xTimerChangePeriod(_flash_timer, pdMS_TO_TICKS(duration_ms), 0);
+  }
+  if (_flash_timer != nullptr) {
+    xTimerStart(_flash_timer, 0);
+  }
+#else
+  (void)duration_ms;
+#endif
+}
+
+void LedService::_flash_timer_cb(LedTimerHandle timer) {
+#ifndef TEST_HOST
+  auto *self = static_cast<LedService *>(pvTimerGetTimerID(timer));
+  if (self != nullptr && self->_config.driver != nullptr) {
+    self->_config.driver->set_rgb(21, 0, 0, 0);
+  }
+#else
+  (void)timer;
+#endif
+}
+
 void LedService::set_back_leds_rgb(uint8_t r, uint8_t g, uint8_t b) {
   if (_config.driver == nullptr) {
     return;

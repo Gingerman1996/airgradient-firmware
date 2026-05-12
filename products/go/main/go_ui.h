@@ -27,6 +27,7 @@ enum class UIAction : uint8_t {
   ClearData,
   CalibrateCo2,
   SaveTag, ///< Accompanied by UIActionResult::tag_index.
+  ExitAdminMode, ///< User selected "Exit Admin Mode" in Settings.
 };
 
 struct UIActionResult {
@@ -113,6 +114,11 @@ public:
   /// Clear snackbar if expired. Called by orchestrator before build_values.
   void clear_expired_snackbar(uint32_t now_ms);
 
+  /// Mirror persisted admin-mode flag so the Settings menu can hide /
+  /// disable rows that only make sense in admin mode.
+  void set_admin_mode(bool on) { _admin_mode = on; }
+  bool admin_mode() const { return _admin_mode; }
+
   /// Synchronize internal option indices from persisted GoSettings.
   /// Called by the orchestrator once after loading settings from NVS.
   void sync_settings(const GoSettings &settings);
@@ -173,6 +179,9 @@ private:
   uint8_t _setting_auto_lock = 0;        // 0="Off"
   uint8_t _setting_led_brightness = 4;   // 0=Off, 1=25%, 2=50%, 3=75%, 4=100%
   uint8_t _setting_back_led_brightness = 4; // AQI back LEDs — same scale
+
+  /// Mirror of `GoSettings::admin_mode` — only used for menu row visibility.
+  bool _admin_mode = false;
 
   // Snackbar
   char _snackbar_text[48] = {};
