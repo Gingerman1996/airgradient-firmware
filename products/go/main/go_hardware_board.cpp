@@ -202,6 +202,14 @@ void GoHardwareBoard::init_bms() {
         AG_LOGW(TAG, "BQ27427: factory reset failed");
       }
     }
+
+    // Configure Design Capacity for the AGo cell (2000 mAh).  The driver
+    // method is idempotent — if the chip already has 2000 mAh, this is a
+    // no-op and does not perturb learned Qmax state.  Drives the full
+    // UNSEAL → CFGUPDATE → block write → SOFT_RESET → readback sequence.
+    if (!_fuel_gauge->set_design_capacity_mah(2000)) {
+      AG_LOGW(TAG, "BQ27427: failed to set Design Capacity=2000mAh");
+    }
     uint8_t soc = 0;
     uint16_t mv = 0;
     int16_t ma = 0;

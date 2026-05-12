@@ -148,6 +148,12 @@ private:
   /// Poll the Flags() register until the CFGUPDATE bit (bit 4) matches
   /// `expected_set`.  Returns false on timeout.
   bool _wait_cfgupdate_flag(bool expected_set, uint32_t timeout_ms);
+
+  /// Send the UNSEAL sequence (key `0x8000` to Control() twice, per TRM
+  /// §7.1.3).  No-op if the chip is already UNSEALED.  Required before any
+  /// Data Memory write because BlockDataChecksum (0x60) is "UNSEALED Access"
+  /// per TRM §6.4.
+  bool _unseal();
 };
 
 #endif // BQ27427_H

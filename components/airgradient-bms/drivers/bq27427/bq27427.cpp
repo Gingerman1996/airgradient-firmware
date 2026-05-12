@@ -31,6 +31,9 @@ constexpr uint16_t CTRL_DEVICE_TYPE = 0x0001;
 constexpr uint16_t CTRL_SET_CFGUPDATE = 0x0013;
 constexpr uint16_t CTRL_RESET = 0x0041;
 constexpr uint16_t CTRL_SOFT_RESET = 0x0042;
+// Per TRM §7.1.3, UNSEAL is performed by writing the unseal key (`0x8000`)
+// to Control() twice.  Both halves of the BQ27427 unseal key are identical.
+constexpr uint16_t CTRL_UNSEAL_KEY = 0x8000;
 
 // Extended command interface (TRM §6).
 constexpr uint8_t CMD_DATA_BLOCK_CLASS = 0x3E;
@@ -269,6 +272,20 @@ bool BQ27427::_select_data_block(uint8_t subclass, uint8_t block_offset) {
   return true;
 }
 
+bool BQ27427::_unseal() {
+  // TRM §7.1.3: write the unseal key twice to Control().  Both halves are
+  // the same for BQ27427 (0x8000).  No-op when the chip is already UNSEALED,
+  // so it's safe to call unconditionally before any Data Memory write.
+  if (!_write_word(CMD_CONTROL, CTRL_UNSEAL_KEY)) {
+    return false;
+  }
+  if (!_write_word(CMD_CONTROL, CTRL_UNSEAL_KEY)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  return true;
+}
+
 bool BQ27427::_wait_cfgupdate_flag(bool expected_set, uint32_t timeout_ms) {
   const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
   while (true) {
@@ -292,20 +309,21 @@ bool BQ27427::read_design_capacity_mah(uint16_t &out) {
   // No CFGUPDATE needed for reads — just point at the block and read.  TRM
   // §4.1: offsets 0–31 live in block 0.  Data Memory is MSB-first.
   //
-  // The chip needs a short settle delay after writing DataBlock() (0x3F)
-  // before the new block's contents appear at 0x40..0x5F; without it, the
-  // first single-byte read can return stale 0x00 even though subsequent
-  // reads are correct.  Using a single 2-byte transaction also avoids the
-  // per-byte buffer-coherence issue.
+  // IMPORTANT: reads must START at 0x40 to trigger the chip's block-buffer
+  // fill from DM.  A read that starts at 0x46 (the Design Capacity offset)
+  // directly returns stale/zero bytes — the chip only populates the buffer
+  // when accessed from the block base.  So we read 8 bytes from 0x40 and
+  // pick offsets 6/7 from the buffer.
   if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
     return false;
   }
-  vTaskDelay(pdMS_TO_TICKS(5));
-  uint8_t pair[2] = {0, 0};
-  if (!_read_block(CMD_BLOCK_DATA_BASE + OFFSET_DESIGN_CAPACITY, pair, sizeof(pair))) {
+  vTaskDelay(pdMS_TO_TICKS(10));
+  uint8_t buf[8] = {};
+  if (!_read_block(CMD_BLOCK_DATA_BASE, buf, sizeof(buf))) {
     return false;
   }
-  out = (static_cast<uint16_t>(pair[0]) << 8) | pair[1];
+  out = (static_cast<uint16_t>(buf[OFFSET_DESIGN_CAPACITY]) << 8) |
+        buf[OFFSET_DESIGN_CAPACITY + 1];
   return true;
 }
 
@@ -320,6 +338,13 @@ bool BQ27427::set_design_capacity_mah(uint16_t mah) {
     return true;
   }
   ESP_LOGI(TAG, "Updating Design Capacity %u → %u mAh", current, mah);
+
+  // 0. UNSEAL — required because BlockDataChecksum (0x60) writes are
+  //    UNSEALED-only (TRM §6.4).  Safe to call unconditionally; no-op when
+  //    the chip is already in UNSEALED mode.
+  if (!_unseal()) {
+    return false;
+  }
 
   // 1. Enter CFGUPDATE mode (TRM §4.1 step 2/3).
   if (!_write_word(CMD_CONTROL, CTRL_SET_CFGUPDATE)) {
@@ -386,15 +411,45 @@ bool BQ27427::set_design_capacity_mah(uint16_t mah) {
     return false;
   }
 
-  ESP_LOGI(TAG, "Design Capacity now %umAh (csum=0x%02X)", mah, new_csum);
+  // 9. Diagnostic: re-load and dump the State block so we can see exactly
+  //    what's in Data Memory after the commit + SOFT_RESET — independent of
+  //    any single-field read path.
+  vTaskDelay(pdMS_TO_TICKS(50)); // chip needs time after SOFT_RESET
+  if (_select_data_block(SUBCLASS_STATE, 0x00)) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+    uint8_t verify_block[12] = {};
+    if (_read_block(CMD_BLOCK_DATA_BASE, verify_block, sizeof(verify_block))) {
+      ESP_LOGI(TAG, "DM block (after commit): DC=0x%02X%02X DE=0x%02X%02X TermV=0x%02X%02X",
+               verify_block[6], verify_block[7], verify_block[8], verify_block[9],
+               verify_block[10], verify_block[11]);
+    }
+  }
+
+  // 10. Readback verification — the only check that the chip accepted the
+  //     write without bqStudio in the loop.  If readback doesn't match what
+  //     we wrote, we must NOT claim success.
+  uint16_t verify = 0;
+  if (!read_design_capacity_mah(verify)) {
+    ESP_LOGE(TAG, "Design Capacity readback FAILED after write");
+    return false;
+  }
+  if (verify != mah) {
+    ESP_LOGE(TAG, "Design Capacity write did NOT stick — wrote %u, readback %u", mah, verify);
+    return false;
+  }
+  ESP_LOGI(TAG, "Design Capacity verified at %umAh (csum=0x%02X)", mah, new_csum);
   return true;
 }
 
 bool BQ27427::reset_to_factory_defaults() {
-  // Per TRM §5.1.16, RESET should be issued from inside CFGUPDATE so the chip
-  // is in a known state when reinitialising RAM from ROM.
+  // Per TRM §5.1.16, RESET is UNSEALED-only and should be issued from inside
+  // CFGUPDATE so the chip is in a known state when reinitialising RAM from
+  // ROM.
   ESP_LOGW(TAG, "Resetting fuel gauge to factory defaults (Control RESET=0x0041)");
 
+  if (!_unseal()) {
+    return false;
+  }
   if (!_write_word(CMD_CONTROL, CTRL_SET_CFGUPDATE)) {
     return false;
   }
