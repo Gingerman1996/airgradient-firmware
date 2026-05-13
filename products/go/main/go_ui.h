@@ -28,6 +28,9 @@ enum class UIAction : uint8_t {
   CalibrateCo2,
   SaveTag, ///< Accompanied by UIActionResult::tag_index.
   ExitAdminMode, ///< User selected "Exit Admin Mode" in Settings.
+  PlaySound,     ///< User confirmed a Play Sound choice.  Implies
+                 ///< SettingsChanged + play the selected melody.
+                 ///< Accompanied by UIActionResult::sound_index.
 };
 
 struct UIActionResult {
@@ -35,6 +38,7 @@ struct UIActionResult {
   OperatingMode new_mode = OperatingMode::Offline;
   uint8_t tag_index = 0;
   const char *tag_label = nullptr; ///< Points to static tag label string.
+  uint8_t sound_index = 0;          ///< Index into SoundSelect (0=Off/1=Chime/2=Tetris).
 };
 
 // ---------------------------------------------------------------------------
@@ -186,6 +190,9 @@ private:
   /// Mirror of `GoSettings::battery_learning_enabled` — toggleable from
   /// the admin-only Settings row.  0 = Off, 1 = On.
   uint8_t _setting_battery_learning = 1;
+
+  /// Mirror of `GoSettings::sound_select`.  0 = Off, 1 = Chime, 2 = Tetris.
+  uint8_t _setting_play_sound = 0;
 
   // Snackbar
   char _snackbar_text[48] = {};

@@ -417,6 +417,7 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
       .pin = PIN_BUZZER,
       .default_freq_hz = BUZZER_FREQ_HZ,
       .duty_percent = 50,
+      .queue_depth = 64, // melodies (Tetris ~38 notes) need headroom over the default 16
   });
   buzzer->init();
   buzzer->start();
@@ -544,6 +545,7 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
       .pin = PIN_BUZZER,
       .default_freq_hz = BUZZER_FREQ_HZ,
       .duty_percent = 50,
+      .queue_depth = 64, // melodies (Tetris ~38 notes) need headroom over the default 16
   });
   buzzer->init();
   buzzer->start();

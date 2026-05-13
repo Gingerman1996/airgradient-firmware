@@ -4,6 +4,7 @@ idf_component_register(
          "go_hardware_board.cpp"
          "go_ble.cpp"
          "go_buzzer.cpp"
+         "go_melody.cpp"
          "go_types.cpp"
          "go_settings.cpp"
          "go_display.cpp"

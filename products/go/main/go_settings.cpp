@@ -19,6 +19,7 @@ constexpr const char *KEY_LED_BRIGHTNESS = "lb";
 constexpr const char *KEY_BACK_LED_BRIGHTNESS = "blb";
 constexpr const char *KEY_ADMIN_MODE = "adm";
 constexpr const char *KEY_BATTERY_LEARNING = "blr";
+constexpr const char *KEY_SOUND_SELECT = "sd";
 
 bool is_measure_interval_valid(int value) { return value >= 1 && value <= 3600; }
 
@@ -41,6 +42,19 @@ bool is_auto_lock_valid(int value) {
 bool is_led_brightness_valid(int value) { return value >= 0 && value <= 5; }
 
 bool is_device_name_valid(const std::string &value) { return !value.empty() && value.size() <= 64; }
+
+bool is_sound_select_valid(int value) {
+  return value >= 0 && value < static_cast<int>(SOUND_SELECT_COUNT);
+}
+
+const char *sound_select_name(SoundSelect s) {
+  switch (s) {
+  case SoundSelect::Off:    return "off";
+  case SoundSelect::Chime:  return "chime";
+  case SoundSelect::Tetris: return "tetris";
+  }
+  return "off";
+}
 
 } // namespace
 
@@ -121,6 +135,12 @@ GoSettings load_go_settings(ConfigStore &store) {
   bool battery_learning_enabled = true;
   if (store.get_bool(KEY_BATTERY_LEARNING, battery_learning_enabled) == ConfigStoreResult::OK) {
     settings.battery_learning_enabled = battery_learning_enabled;
+  }
+
+  int sound_select = 0;
+  if (store.get_int(KEY_SOUND_SELECT, sound_select) == ConfigStoreResult::OK &&
+      is_sound_select_valid(sound_select)) {
+    settings.sound_select = static_cast<SoundSelect>(sound_select);
   }
 
   return settings;
@@ -221,6 +241,15 @@ bool save_go_settings(ConfigStore &store, const GoSettings &settings) {
     return false;
   }
 
+  if (!is_sound_select_valid(static_cast<int>(settings.sound_select))) {
+    return false;
+  }
+
+  if (store.set_int(KEY_SOUND_SELECT, static_cast<int>(settings.sound_select)) !=
+      ConfigStoreResult::OK) {
+    return false;
+  }
+
   if (store.commit() != ConfigStoreResult::OK) {
     return false;
   }
@@ -233,11 +262,13 @@ void print_settings(const GoSettings &settings) {
   AG_LOGI(TAG,
           "** settings | meas_int=%d | gps_int=%d gps_mode=%d "
           "op_mode=%d | inactivity_to=%d auto_lock=%d | fahrenheit=%s usaqi=%s | "
-          "led_brightness=%u back_led_brightness=%u | admin=%s blearn=%s | device_name=%s **",
+          "led_brightness=%u back_led_brightness=%u | admin=%s blearn=%s sound=%s | "
+          "device_name=%s **",
           settings.measure_interval_seconds, settings.gps_interval_seconds, settings.gps_mode,
           settings.operating_mode, settings.inactivity_timeout_seconds, settings.auto_lock_seconds,
           settings.use_fahrenheit ? "true" : "false", settings.pm_use_usaqi ? "true" : "false",
           settings.led_brightness, settings.back_led_brightness,
           settings.admin_mode ? "true" : "false",
-          settings.battery_learning_enabled ? "true" : "false", settings.device_name.c_str());
+          settings.battery_learning_enabled ? "true" : "false",
+          sound_select_name(settings.sound_select), settings.device_name.c_str());
 }

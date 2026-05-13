@@ -104,6 +104,10 @@ private:
   uint32_t _last_ext_wdt_ms = 0;
   uint32_t _last_input_ms = 0;                ///< Reset on every input; drives inactivity
   uint32_t _snackbar_refresh_deadline_ms = 0; ///< 0 = inactive; non-zero = absolute deadline
+  /// 0 = inactive; non-zero = absolute deadline after which the post-melody
+  /// LED restore (apply_pm25_indicator) should run.  Set by the PlaySound
+  /// UI handler, checked in check_timers().
+  uint32_t _melody_pm25_restore_deadline_ms = 0;
   bool _first_measurement_done = false;
 
   // --- PM sensor sleep (Portable mode power-cycling) ---

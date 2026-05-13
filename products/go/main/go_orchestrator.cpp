@@ -21,6 +21,7 @@
 #include "ag_log.h"
 #include "common.h"
 #include "go_ble_protocol.h"
+#include "go_melody.h"
 #include "rtos.h"
 
 static constexpr const char *TAG = "Orchestrator";
@@ -228,6 +229,12 @@ uint32_t Orchestrator::compute_queue_timeout_ms() const {
     next = std::min(next, sb_remaining);
   }
 
+  // Post-melody AQI restore deadline
+  if (_melody_pm25_restore_deadline_ms != 0) {
+    uint32_t m_remaining = _melody_pm25_restore_deadline_ms - now;
+    next = std::min(next, m_remaining);
+  }
+
   // If any deadline already passed, the unsigned subtraction yields a large
   // number — clamp to 0 so check_timers() fires immediately.
   if (next > MAX_REASONABLE_TIMEOUT_MS) {
@@ -294,6 +301,15 @@ void Orchestrator::check_timers() {
       (now - _snackbar_refresh_deadline_ms) < MAX_REASONABLE_TIMEOUT_MS) {
     _snackbar_refresh_deadline_ms = 0;
     request_background_display_update();
+  }
+
+  // --- Post-melody AQI LED restore ---
+  // The Play Sound melody visual leaves the back LEDs off when it
+  // finishes; this timer restores the normal PM2.5 AQI indicator.
+  if (_melody_pm25_restore_deadline_ms != 0 &&
+      (now - _melody_pm25_restore_deadline_ms) < MAX_REASONABLE_TIMEOUT_MS) {
+    _melody_pm25_restore_deadline_ms = 0;
+    apply_pm25_indicator();
   }
 
   // --- Auto-lock timer ---
@@ -687,6 +703,17 @@ void Orchestrator::on_input(const InputEventData &input) {
     _svc.ui_manager.show_snackbar("Admin mode off");
     AG_LOGI(TAG, "admin mode exited via Settings menu");
     break;
+  case UIAction::PlaySound: {
+    apply_settings_change();
+    const uint32_t duration_ms = play_sound_select(
+        _svc.buzzer, _svc.led, static_cast<SoundSelect>(result.sound_index));
+    if (duration_ms > 0) {
+      // Schedule an AQI-indicator restore once the melody finishes; small
+      // pad covers RTOS jitter between the visual task and this deadline.
+      _melody_pm25_restore_deadline_ms = RTOS::get_time_ms() + duration_ms + 200;
+    }
+    break;
+  }
   case UIAction::None:
     break;
   }

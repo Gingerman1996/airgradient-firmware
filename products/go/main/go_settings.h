@@ -4,6 +4,7 @@
 #include <string>
 
 #include "config_store.h"
+#include "go_melody.h"
 #include "go_types.h"
 
 struct GoSettings {
@@ -48,6 +49,12 @@ struct GoSettings {
   /// Default true so calibration runs immediately after the first admin
   /// entry; admin can disable the notifications once Qmax has converged.
   bool battery_learning_enabled = true;
+
+  /// User-selected melody preference for the Settings → Play Sound row.
+  /// Persisted across reboots; the menu fires the chosen melody on every
+  /// re-confirm.  Default Off so production devices stay quiet unless the
+  /// user opts in.
+  SoundSelect sound_select = SoundSelect::Off;
 
   // --- Identity ---
   std::string device_name = "airgradient-go";

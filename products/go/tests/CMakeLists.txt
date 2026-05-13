@@ -234,6 +234,7 @@ add_library(go_orchestrator_test_support
     "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_orchestrator.cpp"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_ui.cpp"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_settings.cpp"
+    "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_melody.cpp"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/common.cpp"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/rtos.cpp"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-payload-cache/services/payload_cache.cpp"
@@ -393,6 +394,32 @@ target_link_libraries(go_settings_tests PRIVATE
 )
 
 catch_discover_tests(go_settings_tests)
+
+# ---------------------------------------------------------------------------
+# go_melody tests
+# ---------------------------------------------------------------------------
+
+add_library(go_melody_test_support
+    "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_melody.cpp"
+)
+
+target_include_directories(go_melody_test_support PUBLIC
+    "${AIRGRADIENT_REPO_ROOT}/products/go/main"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
+)
+
+target_compile_definitions(go_melody_test_support PUBLIC TEST_HOST)
+
+add_executable(go_melody_tests
+    go_melody.tests.cpp
+)
+
+target_link_libraries(go_melody_tests PRIVATE
+    go_melody_test_support
+    Catch2::Catch2WithMain
+)
+
+catch_discover_tests(go_melody_tests)
 
 # ---------------------------------------------------------------------------
 # go_gps_driver tests
