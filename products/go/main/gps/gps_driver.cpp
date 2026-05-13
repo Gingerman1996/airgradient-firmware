@@ -39,9 +39,29 @@ static constexpr uint8_t CMD_BAUD_115200[] = {
 // ---------------------------------------------------------------------------
 
 static constexpr uint8_t CASIC_GROUP_CFG = 0x06;
+static constexpr uint8_t CASIC_SUB_NAVSAT = 0x0C;
+static constexpr uint8_t CASIC_SUB_EPHSAVE = 0x10;
 static constexpr uint8_t CASIC_SUB_GNSS_CONTROL = 0x40;
 static constexpr uint8_t GNSS_CONTROL_STOP = 0x10;
 static constexpr uint8_t GNSS_CONTROL_START = 0x11;
+
+/// CFG-NAVSAT constellation enable mask.  Requests all L1-band constellations
+/// the TAU1113 family may support: GPS L1 | GLONASS G1 | BeiDou B1 |
+/// Galileo E1 | QZSS L1 | BeiDou B1C.  The module silently ignores signals
+/// its RF front-end cannot receive; the polled-back active mask confirms
+/// what was actually enabled (logged at boot for diagnostics).
+static constexpr uint32_t NAVSAT_ENABLE_MASK = 0x00004037;
+
+// ---------------------------------------------------------------------------
+// MON (monitor) constants (file-local)
+// ---------------------------------------------------------------------------
+
+static constexpr uint8_t CASIC_GROUP_MON = 0x0A;
+static constexpr uint8_t CASIC_SUB_VER = 0x04;
+
+/// MON-VER polled response payload: 16 bytes swVersion + 16 bytes hwVersion.
+static constexpr uint16_t MON_VER_PAYLOAD_LEN = 32;
+static constexpr size_t MON_VER_STRING_LEN = 16;
 
 // ---------------------------------------------------------------------------
 // CASIC ACK/NAK response constants (file-local)
@@ -66,6 +86,16 @@ static constexpr uint32_t CASIC_ACK_TIMEOUT_MS = 300;
 /// ACK/NAK packet length: header(2) + group(1) + sub(1) + len(2) + payload(2) + ck(2) = 10.
 static constexpr size_t CASIC_ACK_PACKET_LEN = 10;
 
+/// Maximum payload size across AID-POS (17), AID-TIME (20), CFG-EPHSAVE (1).
+static constexpr size_t CASIC_MAX_PAYLOAD = 20;
+
+/// Maximum payload size for a polled CASIC response.  Sized for MON-VER (32
+/// bytes) with headroom for interleaved NMEA data in the scan buffer.
+static constexpr size_t CASIC_POLL_BUF_SIZE = 64;
+
+/// Leap seconds since 1980 (18 as of 2026, unchanged since 2017-01-01).
+static constexpr uint8_t GPS_LEAP_SECONDS_SINCE_1980 = 18;
+
 // ---------------------------------------------------------------------------
 // CASIC binary protocol helpers (file-local)
 // ---------------------------------------------------------------------------
@@ -82,9 +112,6 @@ static void casic_checksum(const uint8_t *data, size_t len, uint8_t &ck1, uint8_
     ck2 = (ck2 + ck1) & 0xFF;
   }
 }
-
-/// Maximum payload size across AID-POS (17), AID-TIME (20), CFG-EPHSAVE (1).
-static constexpr size_t CASIC_MAX_PAYLOAD = 20;
 
 /// Build and send a CASIC binary packet.
 /// Stack buffer: 2 (header) + 2 (ID) + 2 (length) + payload + 2 (checksum)
@@ -216,8 +243,63 @@ static bool send_cfg_with_ack(AirgradientSerial &serial, uint8_t group, uint8_t 
   return false;
 }
 
-/// Leap seconds since 1980 (18 as of 2026, unchanged since 2017-01-01).
-static constexpr uint8_t GPS_LEAP_SECONDS_SINCE_1980 = 18;
+/// Wait for a CASIC response packet matching @p group / @p sub with
+/// @p expected_payload_len.  On success, copies the payload into
+/// @p out_payload (which must have room for @p expected_payload_len bytes)
+/// and returns true.  On timeout or length mismatch, returns false.
+///
+/// This is the generic poll-response counterpart to wait_for_casic_ack().
+/// The caller is responsible for draining stale serial data and sending the
+/// poll packet before calling this function.
+static bool wait_for_casic_poll_response(AirgradientSerial &serial, uint8_t group, uint8_t sub,
+                                         uint16_t expected_payload_len, uint8_t *out_payload,
+                                         const char *name) {
+  const size_t packet_len =
+      2 + 2 + 2 + static_cast<size_t>(expected_payload_len) + 2; // header+id+len+payload+ck
+  uint8_t buf[CASIC_POLL_BUF_SIZE];
+  size_t buf_len = 0;
+  uint32_t elapsed_ms = 0;
+
+  while (elapsed_ms < CASIC_ACK_TIMEOUT_MS) {
+    RTOS::delay_ms(CASIC_ACK_POLL_MS);
+    elapsed_ms += CASIC_ACK_POLL_MS;
+
+    const int avail = serial.available();
+    if (avail <= 0) {
+      continue;
+    }
+
+    const int room = static_cast<int>(sizeof(buf)) - static_cast<int>(buf_len);
+    const int to_read = (avail < room) ? avail : room;
+    if (to_read > 0) {
+      const int n = serial.read(&buf[buf_len], to_read);
+      buf_len += static_cast<size_t>(n);
+    }
+
+    for (size_t i = 0; i + packet_len <= buf_len; ++i) {
+      if (buf[i] != CASIC_HEADER_0 || buf[i + 1] != CASIC_HEADER_1) {
+        continue;
+      }
+      if (buf[i + 2] != group || buf[i + 3] != sub) {
+        continue;
+      }
+      const uint16_t payload_len =
+          static_cast<uint16_t>(buf[i + 4]) | (static_cast<uint16_t>(buf[i + 5]) << 8);
+      if (payload_len != expected_payload_len) {
+        continue;
+      }
+      memcpy(out_payload, &buf[i + 6], expected_payload_len);
+      return true;
+    }
+
+    if (buf_len >= sizeof(buf)) {
+      break;
+    }
+  }
+
+  AG_LOGW(TAG, "%s: poll timeout", name);
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Construction / destruction
@@ -244,7 +326,9 @@ bool GpsDriver::begin(int baud_rate) {
   if (!_serial.begin(baud_rate)) {
     return false;
   }
+  _poll_mon_ver();
   _send_cfg_ephsave();
+  _send_cfg_navsat();
   return true;
 }
 
@@ -508,9 +592,74 @@ void GpsDriver::_send_aid_time(int64_t epoch_s, uint32_t time_acc_ms) {
   send_casic_packet(_serial, 0x0B, 0x11, payload, sizeof(payload));
 }
 
+void GpsDriver::_poll_mon_ver() {
+  // Poll MON-VER and log the module's software/hardware version strings.
+  // Purely diagnostic — a timeout does not affect normal operation.
+  drain_serial_rx(_serial);
+  uint8_t unused = 0;
+  send_casic_packet(_serial, CASIC_GROUP_MON, CASIC_SUB_VER, &unused, 0);
+
+  uint8_t payload[MON_VER_PAYLOAD_LEN];
+  if (!wait_for_casic_poll_response(_serial, CASIC_GROUP_MON, CASIC_SUB_VER, MON_VER_PAYLOAD_LEN,
+                                    payload, "mon_ver")) {
+    return;
+  }
+
+  // Extract version strings — null-terminate in case the module pads
+  // with non-null bytes.
+  char sw_ver[MON_VER_STRING_LEN + 1];
+  char hw_ver[MON_VER_STRING_LEN + 1];
+  memcpy(sw_ver, &payload[0], MON_VER_STRING_LEN);
+  memcpy(hw_ver, &payload[MON_VER_STRING_LEN], MON_VER_STRING_LEN);
+  sw_ver[MON_VER_STRING_LEN] = '\0';
+  hw_ver[MON_VER_STRING_LEN] = '\0';
+  AG_LOGI(TAG, "module: sw=%s hw=%s", sw_ver, hw_ver);
+}
+
 void GpsDriver::_send_cfg_ephsave() {
   // CFG-EPHSAVE payload: 1 byte
   // [0]  U1  enable = 1
   const uint8_t payload[] = {0x01};
-  send_casic_packet(_serial, 0x06, 0x10, payload, sizeof(payload));
+  if (!send_cfg_with_ack(_serial, CASIC_GROUP_CFG, CASIC_SUB_EPHSAVE, payload, sizeof(payload),
+                         "cfg_ephsave")) {
+    AG_LOGW(TAG, "cfg_ephsave: module did not acknowledge after retry");
+  }
+}
+
+void GpsDriver::_send_cfg_navsat() {
+  // CFG-NAVSAT payload: 4 bytes (U4, little-endian)
+  // [0-3]  U4  enableMask  Bit mask of enabled satellite types
+  uint8_t payload[4];
+  const uint32_t mask = NAVSAT_ENABLE_MASK;
+  memcpy(payload, &mask, sizeof(mask));
+  if (!send_cfg_with_ack(_serial, CASIC_GROUP_CFG, CASIC_SUB_NAVSAT, payload, sizeof(payload),
+                         "cfg_navsat")) {
+    AG_LOGW(TAG, "cfg_navsat: module did not acknowledge after retry");
+    return;
+  }
+  _poll_cfg_navsat();
+}
+
+void GpsDriver::_poll_cfg_navsat() {
+  // Poll CFG-NAVSAT and log the active constellation mask.
+  // Purely diagnostic — a timeout does not affect normal operation.
+  static constexpr uint16_t NAVSAT_PAYLOAD_LEN = 4;
+
+  drain_serial_rx(_serial);
+  uint8_t unused = 0;
+  send_casic_packet(_serial, CASIC_GROUP_CFG, CASIC_SUB_NAVSAT, &unused, 0);
+
+  uint8_t payload[NAVSAT_PAYLOAD_LEN];
+  if (!wait_for_casic_poll_response(_serial, CASIC_GROUP_CFG, CASIC_SUB_NAVSAT, NAVSAT_PAYLOAD_LEN,
+                                    payload, "cfg_navsat")) {
+    return;
+  }
+
+  uint32_t active_mask;
+  memcpy(&active_mask, payload, sizeof(active_mask));
+  AG_LOGI(TAG, "cfg_navsat: requested=0x%08lX active=0x%08lX",
+          static_cast<unsigned long>(NAVSAT_ENABLE_MASK), static_cast<unsigned long>(active_mask));
+  if (active_mask != NAVSAT_ENABLE_MASK) {
+    AG_LOGW(TAG, "cfg_navsat: active mask differs from requested");
+  }
 }

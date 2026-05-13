@@ -32,4 +32,19 @@ menu "AirGradient Sensors"
             conditioning cycle and one PM read, then delays until this many
             milliseconds have elapsed since the iteration started.
 
+    choice SGP41_INDEX_SAMPLING_INTERVAL
+        prompt "SGP41 gas-index sampling interval"
+        default SGP41_INDEX_SAMPLING_INTERVAL_10S
+        help
+            Cadence at which the Sensirion gas-index algorithm is fed raw
+            SGP41 samples in always-awake modes (Portable / Stationary).
+            Sensirion tests only 1 s and 10 s intervals. The 10 s setting
+            is recommended to balance index quality against I2C traffic.
+
+        config SGP41_INDEX_SAMPLING_INTERVAL_1S
+            bool "1 second"
+        config SGP41_INDEX_SAMPLING_INTERVAL_10S
+            bool "10 seconds (recommended)"
+    endchoice
+
 endmenu

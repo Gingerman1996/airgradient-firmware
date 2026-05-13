@@ -185,7 +185,10 @@ GoApp::FastPathResult GoApp::execute_fast_path(const RtcAppState &state,
   bool has_measures = false;
   if (!promote) {
     Measures measures = sm.start_measures(1, SensorGroup::All);
-    // TODO: raw-to-index placeholder (remove when algorithm is applied)
+    // UX placeholder: fast path never configures the gas-index algorithm
+    // (no SensorProducer), so index fields stay at invalid sentinels.
+    // Overwrite with raw ticks so the display and stored route points
+    // still show a value during Offline fast-path cycles.
     measures.tvoc_nox.tvoc_index = measures.tvoc_nox.tvoc_raw;
     measures.tvoc_nox.nox_index = measures.tvoc_nox.nox_raw;
     ago = measures_to_ago(measures);
@@ -619,11 +622,6 @@ MeasuresAGo measures_to_ago(const Measures &m) {
   ago.tvoc_nox = m.tvoc_nox;
   ago.power = m.power;
   ago.pressure = m.pressure;
-
-  // TODO: Temporarily use raw value for index since algorithm not applied yet
-  ago.tvoc_nox.tvoc_index = ago.tvoc_nox.tvoc_raw;
-  ago.tvoc_nox.nox_index = ago.tvoc_nox.nox_raw;
-
   return ago;
 }
 

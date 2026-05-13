@@ -393,8 +393,10 @@ TEST_CASE("measures_to_ago: maps valid fields") {
   m.temp_hum_a.temperature = 22.5f;
   m.temp_hum_a.humidity = 55.0f;
   m.pm_a.pm_25 = 12.3f;
-  m.tvoc_nox.tvoc_raw = 100;
-  m.tvoc_nox.nox_raw = 50;
+  m.tvoc_nox.tvoc_index = 120;
+  m.tvoc_nox.tvoc_raw = 25000;
+  m.tvoc_nox.nox_index = 30;
+  m.tvoc_nox.nox_raw = 18000;
   m.pressure.pressure = 1013.25f;
 
   MeasuresAGo ago = measures_to_ago(m);
@@ -403,8 +405,11 @@ TEST_CASE("measures_to_ago: maps valid fields") {
   CHECK(ago.temp_hum_a.temperature == 22.5f);
   CHECK(ago.temp_hum_a.humidity == 55.0f);
   CHECK(ago.pm_a.pm_25 == 12.3f);
-  CHECK(ago.tvoc_nox.tvoc_index == 100);
-  CHECK(ago.tvoc_nox.nox_index == 50);
+  // measures_to_ago passes through tvoc_nox fields as-is (no raw-to-index copy)
+  CHECK(ago.tvoc_nox.tvoc_index == 120);
+  CHECK(ago.tvoc_nox.tvoc_raw == 25000);
+  CHECK(ago.tvoc_nox.nox_index == 30);
+  CHECK(ago.tvoc_nox.nox_raw == 18000);
   CHECK(ago.pressure.pressure == 1013.25f);
 }
 
@@ -415,7 +420,9 @@ TEST_CASE("measures_to_ago: invalid fields preserved") {
   m.temp_hum_a.temperature = MeasuresInvalid::TEMPERATURE;
   m.temp_hum_a.humidity = MeasuresInvalid::HUMIDITY;
   m.pm_a.pm_25 = MeasuresInvalid::PM;
+  m.tvoc_nox.tvoc_index = MeasuresInvalid::TVOC;
   m.tvoc_nox.tvoc_raw = MeasuresInvalid::TVOC;
+  m.tvoc_nox.nox_index = MeasuresInvalid::NOX;
   m.tvoc_nox.nox_raw = MeasuresInvalid::NOX;
   m.pressure.pressure = MeasuresInvalid::PRESSURE;
 
@@ -425,9 +432,10 @@ TEST_CASE("measures_to_ago: invalid fields preserved") {
   CHECK(ago.temp_hum_a.temperature == MeasuresInvalid::TEMPERATURE);
   CHECK(ago.temp_hum_a.humidity == MeasuresInvalid::HUMIDITY);
   CHECK(ago.pm_a.pm_25 == MeasuresInvalid::PM);
-  // tvoc_index/nox_index are copied from raw values in measures_to_ago
   CHECK(ago.tvoc_nox.tvoc_index == MeasuresInvalid::TVOC);
+  CHECK(ago.tvoc_nox.tvoc_raw == MeasuresInvalid::TVOC);
   CHECK(ago.tvoc_nox.nox_index == MeasuresInvalid::NOX);
+  CHECK(ago.tvoc_nox.nox_raw == MeasuresInvalid::NOX);
   CHECK(ago.pressure.pressure == MeasuresInvalid::PRESSURE);
 }
 

@@ -1,6 +1,6 @@
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_minimum_required(VERSION 3.16)
-    project(airgradient_sensors_tests CXX)
+    project(airgradient_sensors_tests C CXX)
 
     set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,11 +33,13 @@ endif()
 add_library(sensors_test_support
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-sensors/services/sensor_manager.cpp"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/rtos.cpp"
+    "${AIRGRADIENT_REPO_ROOT}/components/sensirion-gas-index-algorithm/sensirion_gas_index_algorithm.c"
 )
 
 target_include_directories(sensors_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-sensors"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
+    "${AIRGRADIENT_REPO_ROOT}/components/sensirion-gas-index-algorithm"
 )
 
 target_compile_definitions(sensors_test_support PUBLIC TEST_HOST)

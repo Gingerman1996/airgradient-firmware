@@ -118,9 +118,10 @@ void RTOS::queue_send(RtosQueueHandle queue_handle, const void *item, uint32_t t
 #ifndef TEST_HOST
   xQueueSend(queue_handle, item, pdMS_TO_TICKS(timeout_ms));
 #else
-  (void)queue_handle;
-  (void)item;
-  (void)timeout_ms;
+  RTOS *rtos = get_instance();
+  if (rtos != nullptr) {
+    rtos->queue_send_impl(queue_handle, item, timeout_ms);
+  }
 #endif
 }
 
@@ -183,8 +184,10 @@ bool RTOS::task_notify_wait(uint32_t *out_value, uint32_t timeout_ms) {
   const TickType_t ticks = (timeout_ms == UINT32_MAX) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
   return xTaskNotifyWait(0, 0, out_value, ticks) == pdTRUE;
 #else
-  (void)out_value;
-  (void)timeout_ms;
+  RTOS *rtos = get_instance();
+  if (rtos != nullptr) {
+    return rtos->task_notify_wait_impl(out_value, timeout_ms);
+  }
   return false;
 #endif
 }
@@ -206,6 +209,18 @@ void RTOS::set_system_time_from_epoch(int64_t epoch_seconds) {
 }
 
 void RTOS::set_system_time_from_epoch_impl(int64_t epoch_seconds) { (void)epoch_seconds; }
+
+bool RTOS::task_notify_wait_impl(uint32_t *out_value, uint32_t timeout_ms) {
+  (void)out_value;
+  (void)timeout_ms;
+  return false;
+}
+
+void RTOS::queue_send_impl(RtosQueueHandle queue_handle, const void *item, uint32_t timeout_ms) {
+  (void)queue_handle;
+  (void)item;
+  (void)timeout_ms;
+}
 
 // ---------------------------------------------------------------------------
 // RtosMutex

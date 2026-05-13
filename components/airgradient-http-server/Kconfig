@@ -1,0 +1,28 @@
+menu "AirGradient HTTP Server"
+
+    config AG_HTTP_PORT
+        int "Default HTTP listen port"
+        range 1 65535
+        default 80
+        help
+            Default port the HTTP server listens on. Products may override
+            this at runtime by passing a different value to start().
+
+    config AG_HTTP_MAX_CONNECTIONS
+        int "Maximum concurrent connections"
+        range 1 16
+        default 4
+        help
+            Maximum number of simultaneous TCP connections the server will
+            accept. Passed to esp_http_server as max_open_sockets.
+
+    config AG_HTTP_MAX_BODY_SIZE
+        int "Maximum request body size (bytes)"
+        range 256 65536
+        default 4096
+        help
+            Upper bound for buffered request bodies. Requests with bodies
+            larger than this cap will be truncated to this size before the
+            handler runs.
+
+endmenu

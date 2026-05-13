@@ -248,21 +248,64 @@ non-blocking). No dedicated task.
 
 ### Sensor Producer
 
-Wraps the shared `SensorManager` from `components/airgradient-sensors/`:
+Wraps the shared `SensorManager` from `components/airgradient-sensors/`.
+In Portable and Stationary modes (always-awake), the producer also drives
+a gas-index sampler that feeds the Sensirion algorithm at a fixed cadence
+(default 10 s) independent of the measurement interval.
 
 ```text
 Sensor Task:
+  warmup()
+  configure gas-index sampler (if SGP41 is wired)
+
   loop:
-    Wait for task notification from orchestrator
-    Decode iterations + SensorGroup from notification value
-    Call SensorManager::start_measures(iterations, groups)   // blocking
-    Post Event::SensorDataReady to event queue
+    Wait for task notification (with sampler timeout when active)
+
+    If notified:
+      handle_calibration / handle_prepare / handle_measurement
+
+    If sampler tick due:
+      handle_sampler_tick → read SGP41, advance algorithm, cache result
 ```
 
 The orchestrator controls when to measure by sending a task notification
 that encodes both the iteration count (always 1) and which sensor groups
-to poll (`SensorGroup::PM`, `SensorGroup::Other`, or `SensorGroup::All`).
-The two sensor groups have independent timers.
+to poll (`SensorGroup::PM`, `SensorGroup::Other`, `SensorGroup::TvocNox`,
+or `SensorGroup::All`). When the sampler is active, the producer strips
+`TvocNox` from measurement masks and splices its cached TVOC/NOx into
+the result. See [Sensor Producer](docs/sensor_producer.md) for details.
+
+### Gas Index in Offline Mode
+
+TVOC and NOx index values (Sensirion SGP41 gas-index algorithm) are only
+available in Portable and Stationary modes. In Offline mode, the display
+shows raw SRAW ticks instead of index values.
+
+**Why the algorithm cannot run across deep-sleep cycles:**
+
+The Sensirion gas-index algorithm requires continuous sampling at a fixed
+cadence (1 s or 10 s). It builds a rolling baseline (mean and standard
+deviation of the raw sensor signal) over hours and expresses each new
+reading as a deviation from that baseline. This design assumes temporal
+continuity — thousands of evenly-spaced samples, not isolated snapshots
+separated by seconds or minutes of deep sleep.
+
+Sensirion provides a state persistence API (`GasIndexAlgorithm_get_states`
+/ `set_states`) that saves two floats (the mean-variance estimator's mean
+and std) for restoration after short interruptions. This was evaluated and
+rejected for Offline mode because of hard constraints:
+
+| Constraint | Detail |
+|---|---|
+| VOC only | State persistence is only supported for the VOC algorithm. NOx has no equivalent API |
+| 10-minute max interruption | Sensirion specifies that restored states should not be used after interruptions longer than 10 minutes. Measurement intervals above ~600 s exceed this |
+| 3-hour training minimum | States are only meaningful after 3 hours of continuous operation. Offline deep-sleep cycling never accumulates continuous runtime |
+| Low-cadence samples are meaningless | Even if state restoration worked perfectly, one sample every 10–300 seconds cannot track real air quality dynamics. The index value would be technically computed but environmentally unreliable |
+
+The fundamental issue is that the gas-index algorithm is designed for
+always-on monitoring. Offline mode exists to save battery via deep sleep,
+and these goals are incompatible. Displaying raw SRAW ticks (or dashes)
+is more honest than showing an unreliable index.
 
 ### GPS Producer
 

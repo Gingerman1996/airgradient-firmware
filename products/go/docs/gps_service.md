@@ -60,7 +60,7 @@ GpsService gps_svc(gps_driver, event_queue, cfg);
 
 // Optional: inject A-GNSS aiding data (e.g. from BLE phone position).
 // Thread-safe: may be called before start() or while the task is running.
-// Reduces cold-start TTFF from ~30-60s to ~15-25s.
+// Reduces cold-start TTFF from ~30-60s to ~10-25s (with multi-constellation).
 GpsAidingData aiding;
 aiding.latitude = phone_lat;
 aiding.longitude = phone_lon;
@@ -112,7 +112,8 @@ of the posting interval.
 ```text
 GpsService::run():
   Create _done_sem (binary semaphore for stop() join)
-  GpsDriver::begin(baud_rate)
+  GpsDriver::begin(baud_rate)       // baud negotiation → MON-VER → CFG-EPHSAVE → CFG-NAVSAT
+  GpsDriver::gnss_start()
   last_post_ms = 0
 
   while _running:
@@ -252,9 +253,22 @@ which sends CASIC AID-POS and/or AID-TIME binary messages to the TAU1113 module.
 The mutex is held only for a struct copy; serial I/O (`inject_aiding()`) happens
 outside the critical section.
 
-Additionally, `GpsDriver::begin()` sends a CFG-EPHSAVE command to enable
-ephemeris persistence in the module's flash, improving warm-start performance
-after brief power interruptions.
+Additionally, `GpsDriver::begin()` polls the module version and sends two
+configuration commands after baud-rate negotiation:
+
+1. **MON-VER** — polls the module's software and hardware version strings
+   and logs them for diagnostics.
+2. **CFG-EPHSAVE** — enables ephemeris persistence in the module's flash,
+   improving warm-start performance after brief power interruptions.
+3. **CFG-NAVSAT** — sets the constellation enable mask to
+   `0x00004037` (GPS L1 | GLONASS G1 | BeiDou B1 | Galileo E1 | QZSS L1 |
+   BeiDou B1C). The mask requests all L1-band signals the TAU1113 family
+   may support; the module firmware silently ignores unsupported signals.
+   After the module ACKs the set command, the driver polls CFG-NAVSAT back
+   and logs the active mask for diagnostics.
+
+Both commands use `send_cfg_with_ack()` (drain → send → wait for ACK with
+one retry). A failed ACK is logged as a warning but does not prevent startup.
 
 If no aiding data is set, `inject_aiding()` is a no-op and the module
 cold-starts normally.

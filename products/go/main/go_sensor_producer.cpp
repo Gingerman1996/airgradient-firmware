@@ -99,87 +99,133 @@ void SensorProducer::task_entry(void *arg) {
 // ---------------------------------------------------------------------------
 
 void SensorProducer::run() {
-  // Warm up TVOC/NOx (SGP41 conditioning) and PM sensor (SPS30 fan/laser)
-  // before serving the first measurement request. Blocks this task for
-  // ~CONFIG_SENSOR_WARMUP_DURATION_MS;
-  // The orchestrator's initial request_measurement(1, All)
-  // from Orchestrator::init() latches into the FreeRTOS task notification
-  // slot and is honoured as soon as this returns.
   AG_LOGI(TAG, "warming up sensors before first measurement");
   _manager.warmup();
   AG_LOGI(TAG, "warmup complete");
 
+  // Enable the gas-index sampler when a TVOC/NOx sensor is wired and
+  // algorithm configuration succeeds. The sampler converts the indefinite
+  // task_notify_wait into a timeout-driven loop that feeds the Sensirion
+  // algorithm at a fixed cadence independent of the measurement interval.
+  _sampler_enabled =
+      _manager.has_tvoc_nox_sensor() && _manager.configure_tvoc_nox_index(SAMPLER_TICK_MS);
+
+  if (_sampler_enabled) {
+    AG_LOGI(TAG, "gas-index sampler enabled (%lu ms)", static_cast<unsigned long>(SAMPLER_TICK_MS));
+  }
+
+  uint32_t next_tick_ms = static_cast<uint32_t>(RTOS::get_time_ms()) + SAMPLER_TICK_MS;
+
   while (_running) {
+    uint32_t now = static_cast<uint32_t>(RTOS::get_time_ms());
+    uint32_t timeout = UINT32_MAX;
+    if (_sampler_enabled) {
+      timeout = (next_tick_ms > now) ? (next_tick_ms - now) : 0;
+    }
+
     uint32_t notify_value = 0;
+    const bool notified = RTOS::task_notify_wait(&notify_value, timeout);
 
-    // Block indefinitely until the orchestrator sends a task notification.
-    // The value encodes the request type: measurement (iterations + groups),
-    // NOTIFY_CALIBRATION, or NOTIFY_PREPARE.
-    RTOS::task_notify_wait(&notify_value, UINT32_MAX);
-
-    // stop() may have set _running = false and sent a notification with
-    // value 0 to unblock this wait before calling RTOS::task_delete.
     if (!_running) {
       break;
     }
 
-    if (notify_value == NOTIFY_CALIBRATION) {
-      // Blocking: polls sensor until calibration completes or times out.
-      Co2CalibrationResult result = _manager.calibrate_co2();
-
-      Event event{};
-      event.type = EventType::Co2CalibrationDone;
-      event.co2_cal_result = static_cast<uint8_t>(result);
-      RTOS::queue_send(_event_queue, &event, 0);
-      continue;
+    if (notified) {
+      if (notify_value == NOTIFY_CALIBRATION) {
+        handle_calibration();
+      } else if (notify_value == NOTIFY_PREPARE) {
+        handle_prepare();
+      } else {
+        handle_measurement(notify_value);
+      }
     }
 
-    if (notify_value == NOTIFY_PREPARE) {
-      // Run warmup after the orchestrator has powered the PM sensor on.
-      // The first warmup read triggers the SPS30 read()
-      // recovery path (stop → start → settle) which restarts measurement
-      // automatically.  Blocks ~CONFIG_SENSOR_WARMUP_DURATION_MS.
-      // The measurement notification latches during warmup and is consumed
-      // on the next iteration of this loop.
-      AG_LOGI(TAG, "PM prepare: warming up after power-on");
-      _manager.warmup();
-      AG_LOGI(TAG, "PM prepare complete");
-      continue;
+    // Sampler tick — runs after the notification handler so a measurement
+    // request never starves it indefinitely. Missed intervals are skipped.
+    now = static_cast<uint32_t>(RTOS::get_time_ms());
+    if (_sampler_enabled && now >= next_tick_ms) {
+      handle_sampler_tick();
+      next_tick_ms = now + SAMPLER_TICK_MS;
     }
-
-    // Decode iteration count (bits 0-7) and sensor group mask (bits 8-15)
-    uint32_t iterations = notify_value & 0xFF;
-    SensorGroup groups = static_cast<SensorGroup>((notify_value >> 8) & 0xFF);
-
-    // Guard against accidental zero values
-    if (iterations == 0) {
-      iterations = 1;
-    }
-    if (groups == SensorGroup::None) {
-      groups = SensorGroup::All;
-    }
-
-    // Blocking call: with 1 iteration returns as fast as I2C reads complete.
-    // The orchestrator continues processing other events while we block here.
-    const Measures measures = _manager.start_measures(static_cast<int>(iterations), groups);
-
-    // Map to MeasuresAGo — select the primary sensor channels only.
-    MeasuresAGo basic{};
-    basic.temp_hum_a = measures.temp_hum_a;
-    basic.pm_a = measures.pm_a;
-    basic.co2 = measures.co2;
-    basic.tvoc_nox = measures.tvoc_nox;
-    basic.power = measures.power;
-    basic.pressure = measures.pressure;
-
-    // TODO: Temporarily use raw value for index since algorithm not applied yet
-    basic.tvoc_nox.tvoc_index = basic.tvoc_nox.tvoc_raw;
-    basic.tvoc_nox.nox_index = basic.tvoc_nox.nox_raw;
-
-    // Post result to the orchestrator event queue (non-blocking: drop if full).
-    Event event{};
-    event.type = EventType::SensorDataReady;
-    event.sensor_data = basic;
-    RTOS::queue_send(_event_queue, &event, 0);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Notification handlers
+// ---------------------------------------------------------------------------
+
+void SensorProducer::handle_calibration() {
+  // NOTE: Blocking!
+  Co2CalibrationResult result = _manager.calibrate_co2();
+
+  Event event{};
+  event.type = EventType::Co2CalibrationDone;
+  event.co2_cal_result = static_cast<uint8_t>(result);
+  RTOS::queue_send(_event_queue, &event, 0);
+}
+
+void SensorProducer::handle_prepare() {
+  AG_LOGI(TAG, "PM prepare: warming up after power-on");
+  _manager.warmup();
+  AG_LOGI(TAG, "PM prepare: complete");
+}
+
+void SensorProducer::handle_measurement(uint32_t notify_value) {
+  // Decode iteration count (bits 0-7) and sensor group mask (bits 8-15)
+  uint32_t iterations = notify_value & 0xFF;
+  auto requested_groups = static_cast<SensorGroup>((notify_value >> 8) & 0xFF);
+
+  if (iterations == 0) {
+    iterations = 1;
+  }
+  if (requested_groups == SensorGroup::None) {
+    requested_groups = SensorGroup::All;
+  }
+
+  // When the sampler is active, strip the TvocNox bit so measurement
+  // notifications never read SGP41 or advance the algorithm at an
+  // irregular cadence — only the sampler tick does that.
+  SensorGroup measurement_groups = requested_groups;
+  if (_sampler_enabled) {
+    measurement_groups = static_cast<SensorGroup>(static_cast<uint8_t>(requested_groups) &
+                                                  ~static_cast<uint8_t>(SensorGroup::TvocNox));
+  }
+
+  Measures measures = _manager.start_measures(static_cast<int>(iterations), measurement_groups);
+
+  // When the sampler is active, the measurement didn't read SGP41
+  // (TvocNox bit was stripped). Splice in the cached TVOC/NOx so the
+  // orchestrator receives fresh index values.
+  if (_sampler_enabled) {
+    measures.tvoc_nox = _last_tvoc_nox;
+  }
+
+  // Cache the latest valid temp/hum for compensation push.
+  if (measures.temp_hum_a.is_temp_valid() && measures.temp_hum_a.is_hum_valid()) {
+    _last_temp_hum = measures.temp_hum_a;
+    _last_temp_hum_valid = true;
+  }
+
+  // Map to MeasuresAGo — select the primary sensor channels only.
+  MeasuresAGo basic{};
+  basic.temp_hum_a = measures.temp_hum_a;
+  basic.pm_a = measures.pm_a;
+  basic.co2 = measures.co2;
+  basic.tvoc_nox = measures.tvoc_nox;
+  basic.power = measures.power;
+  basic.pressure = measures.pressure;
+
+  Event event{};
+  event.type = EventType::SensorDataReady;
+  event.sensor_data = basic;
+  RTOS::queue_send(_event_queue, &event, 0);
+}
+
+void SensorProducer::handle_sampler_tick() {
+  if (_last_temp_hum_valid) {
+    _manager.set_tvoc_nox_compensation(_last_temp_hum.temperature, _last_temp_hum.humidity);
+  }
+
+  Measures sampler = _manager.start_measures(1, SensorGroup::TvocNox);
+  _last_tvoc_nox = sampler.tvoc_nox;
 }

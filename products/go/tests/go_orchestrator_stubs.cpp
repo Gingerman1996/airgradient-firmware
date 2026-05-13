@@ -495,6 +495,10 @@ bool StorageService::ensure_route_dir() const { return true; }
 // SensorProducer private methods
 void SensorProducer::task_entry(void * /*arg*/) {}
 void SensorProducer::run() {}
+void SensorProducer::handle_calibration() {}
+void SensorProducer::handle_prepare() {}
+void SensorProducer::handle_measurement(uint32_t /*notify_value*/) {}
+void SensorProducer::handle_sampler_tick() {}
 
 // GpsService private methods
 void GpsService::task_entry(void * /*arg*/) {}

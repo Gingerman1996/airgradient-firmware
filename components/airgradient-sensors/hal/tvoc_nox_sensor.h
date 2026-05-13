@@ -25,6 +25,15 @@ public:
   /// it. Callers invoke this repeatedly during the warmup window.
   virtual bool run_conditioning() { return true; }
 
+  /// Update on-driver temperature/humidity compensation used during
+  /// raw-signal acquisition. Stored values persist across read() calls
+  /// until the next set_compensation() call. Default no-op for drivers
+  /// that do not compensate.
+  virtual void set_compensation(float temperature_c, float humidity_pct) {
+    (void)temperature_c;
+    (void)humidity_pct;
+  }
+
 private:
 };
 

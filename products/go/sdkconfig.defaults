@@ -27,3 +27,6 @@ CONFIG_BT_NIMBLE_SM_SC=y
 # (GPIO2) during deep sleep so sleep intervals can exceed the watchdog timeout.
 CONFIG_ULP_COPROC_ENABLED=y
 CONFIG_ULP_COPROC_TYPE_LP_CORE=y
+
+# SGP41 gas index algorithm sampling interval
+CONFIG_SGP41_INDEX_SAMPLING_INTERVAL_10S=y

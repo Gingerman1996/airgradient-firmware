@@ -21,6 +21,17 @@
 #ifndef CONFIG_SENSOR_WARMUP_INTERVAL_MS
 #define CONFIG_SENSOR_WARMUP_INTERVAL_MS 1000
 #endif
+// Derive the SGP41 gas-index sampling interval (ms) from the Kconfig choice.
+// Sensirion supports 1 s and 10 s only; default is 10 s.
+#if defined(CONFIG_SGP41_INDEX_SAMPLING_INTERVAL_1S)
+static constexpr uint32_t SGP41_INDEX_SAMPLING_INTERVAL_MS = 1000;
+#else
+static constexpr uint32_t SGP41_INDEX_SAMPLING_INTERVAL_MS = 10000;
+#endif
+
+extern "C" {
+#include "sensirion_gas_index_algorithm.h"
+}
 
 #include "hal/co2_sensor.h"
 #include "hal/o3_no2_sensor.h"
@@ -31,12 +42,16 @@
 
 /**
  * @brief Bitmask selecting which sensor groups to poll in start_measures()
+ *
+ * Each bit gates a group of sensors. Only sensors in the requested groups
+ * are read; unrequested groups return invalid sentinels in the result.
  */
 enum class SensorGroup : uint8_t {
   None = 0x00,
   PM = 0x01,
   Other = 0x02,
-  All = 0x03,
+  TvocNox = 0x04,
+  All = 0x07,
 };
 
 inline SensorGroup operator|(SensorGroup a, SensorGroup b) {
@@ -120,8 +135,30 @@ public:
   /// Returns immediately if no TVOC/NOx or PM sensors are present.
   void warmup();
 
+  /// True if a TVOC/NOx sensor is wired into this manager.
+  bool has_tvoc_nox_sensor() const { return _sensors.tvoc_nox != nullptr; }
+
+  /// Initialise the gas-index algorithm for the wired SGP41 sensor.
+  /// @param sampling_interval_ms must equal the cadence at which the caller
+  ///        invokes start_measures(SensorGroup::TvocNox). Sensirion supports
+  ///        1000 ms or 10000 ms.
+  ///
+  /// Returns true and sets _index_configured = true on success. Returns
+  /// false when no TVOC/NOx sensor is wired or the interval is unsupported.
+  bool configure_tvoc_nox_index(uint32_t sampling_interval_ms);
+
+  /// Update on-driver compensation for the wired TVOC/NOx sensor.
+  /// Forwards to TVOCNOxSensor::set_compensation(). No-op when no
+  /// TVOC/NOx sensor is wired.
+  void set_tvoc_nox_compensation(float temperature_c, float humidity_pct);
+
 private:
   Sensors &_sensors;
+
+  // Gas-index algorithm state
+  GasIndexAlgorithmParams _voc_params{};
+  GasIndexAlgorithmParams _nox_params{};
+  bool _index_configured = false;
 
   // CO2 calibration polling parameters
   static constexpr uint32_t CALIBRATION_CHECK_INTERVAL_MS = 5000;

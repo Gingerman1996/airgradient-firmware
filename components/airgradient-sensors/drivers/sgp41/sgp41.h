@@ -50,11 +50,15 @@ public:
 
   /**
    * @brief Set temperature and humidity compensation
-   * @param temperature Temperature in °C (-45 to 130)
-   * @param humidity Relative humidity in % (0 to 100)
-   * @return true if successful, false otherwise
+   *
+   * Stored values persist across read() calls until the next
+   * set_compensation() call. Out-of-range values are clamped to the
+   * sensor's supported range.
+   *
+   * @param temperature_c Temperature in °C (-45 to 130)
+   * @param humidity_pct  Relative humidity in % (0 to 100)
    */
-  [[nodiscard]] bool setCompensation(float temperature, float humidity);
+  void set_compensation(float temperature_c, float humidity_pct) override;
 
 private:
   // I2C handles (objects)
@@ -63,9 +67,9 @@ private:
 
   // Private variables
   uint8_t _address;
-  bool _hasCompensation;
-  float _compTemperature;
-  float _compHumidity;
+  bool _has_compensation;
+  float _comp_temperature;
+  float _comp_humidity;
 
   // Command constants (16-bit, big-endian)
   static constexpr uint16_t CMD_MEASURE_RAW = 0x2619;

@@ -16,4 +16,5 @@ idf_component_register(
          "services/sensor_manager.cpp"
     INCLUDE_DIRS "."
     REQUIRES airgradient-common airgradient-serial ads1115 embedded-i2c-scd4x esp_driver_gpio esp_driver_i2c
+             sensirion-gas-index-algorithm
 )

@@ -112,8 +112,17 @@ private:
   /// Send AID-TIME (0x0B 0x11) with UTC time from epoch.
   void _send_aid_time(int64_t epoch_s, uint32_t time_acc_ms);
 
+  /// Poll MON-VER (0x0A 0x04) and log the module software/hardware version.
+  void _poll_mon_ver();
+
   /// Send CFG-EPHSAVE (0x06 0x10) to enable ephemeris persistence.
   void _send_cfg_ephsave();
+
+  /// Send CFG-NAVSAT (0x06 0x0C) to set constellation enable mask.
+  void _send_cfg_navsat();
+
+  /// Poll CFG-NAVSAT (0x06 0x0C) and log the active constellation mask.
+  void _poll_cfg_navsat();
 
   // Return true if the sentence starting at @p buf with length @p len
   // is one of the types GpsDriver consumes (GGA, RMC, GSA). The check

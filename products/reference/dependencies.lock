@@ -6,6 +6,16 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.1.0
+  espressif/mdns:
+    component_hash: 8bcf12e37c58c1d584aef32a02b92548124c7a3a9fcf548d3235c844a035e0f0
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.11.1
   espressif/spi_nand_flash:
     component_hash: 35ac95c884e1fe939815cc47cf52a231425565e950a9f23c9a3fed5980c04a6a
     dependencies:
@@ -25,8 +35,9 @@ dependencies:
       type: idf
     version: 5.5.2
 direct_dependencies:
+- espressif/mdns
 - espressif/spi_nand_flash
 - idf
-manifest_hash: 38bd08c7e34416855c49c8f4b5443967985acc4a11d9e2f0a0668b63cb9d0909
+manifest_hash: d7b1bf62d2bf8b35d059f5bbff161615535fb570373a06d9a135df9eab38a152
 target: esp32c5
 version: 2.0.0

@@ -152,6 +152,11 @@ SensorManager::SensorManager(Sensors &sensors) : _sensors(sensors) {}
 SensorManager::~SensorManager() = default;
 
 void SensorManager::warmup_step() { test_spy::warmup_step_count++; }
+void SensorManager::warmup() {}
+Co2CalibrationResult SensorManager::calibrate_co2() { return Co2CalibrationResult::Unsupported; }
+
+bool SensorManager::configure_tvoc_nox_index(uint32_t /*sampling_interval_ms*/) { return false; }
+void SensorManager::set_tvoc_nox_compensation(float /*temperature_c*/, float /*humidity_pct*/) {}
 
 Measures SensorManager::start_measures(int /*iterations*/, SensorGroup /*groups*/) {
   return test_spy::measures_to_return;
@@ -537,6 +542,10 @@ void ulp_wdt_stop() {}
 
 void SensorProducer::task_entry(void * /*arg*/) {}
 void SensorProducer::run() {}
+void SensorProducer::handle_calibration() {}
+void SensorProducer::handle_prepare() {}
+void SensorProducer::handle_measurement(uint32_t /*notify_value*/) {}
+void SensorProducer::handle_sampler_tick() {}
 
 void GpsService::task_entry(void * /*arg*/) {}
 void GpsService::run() {}

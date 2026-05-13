@@ -258,6 +258,7 @@ target_include_directories(go_orchestrator_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-touch/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-gpio/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble"
+    "${AIRGRADIENT_REPO_ROOT}/components/sensirion-gas-index-algorithm"
 )
 
 target_compile_definitions(go_orchestrator_test_support PUBLIC
@@ -469,6 +470,7 @@ target_include_directories(go_app_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-gpio/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-serial/include"
+    "${AIRGRADIENT_REPO_ROOT}/components/sensirion-gas-index-algorithm"
     "${LIBNMEA_DIR}/src/nmea"
     "${LIBNMEA_DIR}/src/parsers"
 )
@@ -492,3 +494,35 @@ target_link_libraries(go_app_tests PRIVATE
 )
 
 catch_discover_tests(go_app_tests)
+
+# ---------------------------------------------------------------------------
+# go_sensor_producer tests
+# ---------------------------------------------------------------------------
+
+add_library(go_sensor_producer_test_support
+    "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_sensor_producer.cpp"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-sensors/services/sensor_manager.cpp"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/rtos.cpp"
+    "${AIRGRADIENT_REPO_ROOT}/components/sensirion-gas-index-algorithm/sensirion_gas_index_algorithm.c"
+)
+
+target_include_directories(go_sensor_producer_test_support PUBLIC
+    "${AIRGRADIENT_REPO_ROOT}/products/go/main"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-sensors"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
+    "${AIRGRADIENT_REPO_ROOT}/components/sensirion-gas-index-algorithm"
+)
+
+target_compile_definitions(go_sensor_producer_test_support PUBLIC TEST_HOST)
+
+add_executable(go_sensor_producer_tests
+    go_sensor_producer.tests.cpp
+)
+
+target_link_libraries(go_sensor_producer_tests PRIVATE
+    go_sensor_producer_test_support
+    Catch2::Catch2WithMain
+    trompeloeil::trompeloeil
+)
+
+catch_discover_tests(go_sensor_producer_tests)

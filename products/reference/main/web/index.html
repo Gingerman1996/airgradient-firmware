@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AirGradient HTTP server demo</title>
+  <style>
+    body { font-family: sans-serif; max-width: 40em; margin: 2em auto; padding: 0 1em; }
+    code { background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; }
+    li { margin: 0.4em 0; }
+  </style>
+</head>
+<body>
+  <h1>AirGradient HTTP server demo</h1>
+  <p>This page is served from flash via
+     <code>HttpServer::register_static</code>.</p>
+  <p>Try the API endpoints:</p>
+  <ul>
+    <li><a href="/api/status">GET /api/status</a> — JSON status</li>
+    <li><code>POST /api/echo</code> — echoes the request body</li>
+    <li><a href="/api/greet?name=world">GET /api/greet?name=world</a> — query param demo</li>
+  </ul>
+</body>
+</html>

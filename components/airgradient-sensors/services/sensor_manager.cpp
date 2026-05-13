@@ -11,6 +11,10 @@
 #include "measures_types.h"
 #include "rtos.h"
 
+extern "C" {
+#include "sensirion_gas_index_algorithm.h"
+}
+
 static constexpr const char *TAG = "SensorManager";
 
 SensorManager::SensorManager(Sensors &sensor) : _sensors(sensor) {}
@@ -78,6 +82,37 @@ Co2CalibrationResult SensorManager::calibrate_co2() {
   return Co2CalibrationResult::Failed;
 }
 
+bool SensorManager::configure_tvoc_nox_index(uint32_t sampling_interval_ms) {
+  _index_configured = false;
+
+  if (!_sensors.tvoc_nox) {
+    AG_LOGW(TAG, "configure_tvoc_nox_index: no TVOC/NOx sensor wired");
+    return false;
+  }
+
+  if (sampling_interval_ms != 1000 && sampling_interval_ms != 10000) {
+    AG_LOGE(TAG, "configure_tvoc_nox_index: unsupported interval %lu ms",
+            static_cast<unsigned long>(sampling_interval_ms));
+    return false;
+  }
+
+  const float sampling_interval_s = static_cast<float>(sampling_interval_ms) / 1000.0f;
+  GasIndexAlgorithm_init_with_sampling_interval(&_voc_params, GasIndexAlgorithm_ALGORITHM_TYPE_VOC,
+                                                sampling_interval_s);
+  GasIndexAlgorithm_init_with_sampling_interval(&_nox_params, GasIndexAlgorithm_ALGORITHM_TYPE_NOX,
+                                                sampling_interval_s);
+
+  _index_configured = true;
+  AG_LOGI(TAG, "gas-index algorithm configured (%.0f s interval)", sampling_interval_s);
+  return true;
+}
+
+void SensorManager::set_tvoc_nox_compensation(float temperature_c, float humidity_pct) {
+  if (_sensors.tvoc_nox) {
+    _sensors.tvoc_nox->set_compensation(temperature_c, humidity_pct);
+  }
+}
+
 Measures SensorManager::start_measures(int iterations, SensorGroup groups) {
   // Initialize accumulation variables
   TempHumData sum_temp_hum_a = {0, 0};
@@ -116,7 +151,6 @@ Measures SensorManager::start_measures(int iterations, SensorGroup groups) {
       }
 
       _accumulate_temp_hum_a_fallback(temp_hum_a_source, sum_temp_hum_a, counters);
-      _accumulate_tvoc_nox(sum_voc_nox, counters);
       _accumulate_o3_no2(sum_o3no2, counters);
 
       if (temp_hum_a_source != TempHumSource::CO2) {
@@ -125,6 +159,10 @@ Measures SensorManager::start_measures(int iterations, SensorGroup groups) {
       if (temp_hum_a_source != TempHumSource::PRESSURE) {
         _accumulate_pressure(sum_pressure, counters);
       }
+    }
+
+    if (has_group(groups, SensorGroup::TvocNox)) {
+      _accumulate_tvoc_nox(sum_voc_nox, counters);
     }
 
     if (has_group(groups, SensorGroup::PM)) {
@@ -325,22 +363,55 @@ void SensorManager::_accumulate_tvoc_nox(TVOCNOxData &sum, AverageMeasuresCounte
   }
 
   TVOCNOxData data;
-  if (_sensors.tvoc_nox->read(data)) {
+  if (!_sensors.tvoc_nox->read(data)) {
+    return;
+  }
+
+  const bool tvoc_raw_valid = data.is_tvoc_raw_valid();
+  const bool nox_raw_valid = data.is_nox_raw_valid();
+
+  // Raw accumulation
+  if (tvoc_raw_valid) {
+    sum.tvoc_raw += data.tvoc_raw;
+    counters.tvoc_raw++;
+  }
+  if (nox_raw_valid) {
+    sum.nox_raw += data.nox_raw;
+    counters.nox_raw++;
+  }
+
+  // Algorithm step — gated by _index_configured. Fast path never
+  // configures the algorithm, so this branch is skipped there and
+  // _last_tvoc_nox only carries raw values into the cache.
+  if (_index_configured) {
+    if (tvoc_raw_valid) {
+      int32_t voc_idx = 0;
+      GasIndexAlgorithm_process(&_voc_params, data.tvoc_raw, &voc_idx);
+      // Sensirion returns 0 during the 45 s blackout. Do not average the
+      // invalid sentinel; simply skip the field until a nonzero index exists.
+      if (voc_idx != 0) {
+        sum.tvoc_index += voc_idx;
+        counters.tvoc_index++;
+      }
+    }
+    if (nox_raw_valid) {
+      int32_t nox_idx = 0;
+      GasIndexAlgorithm_process(&_nox_params, data.nox_raw, &nox_idx);
+      if (nox_idx != 0) {
+        sum.nox_index += nox_idx;
+        counters.nox_index++;
+      }
+    }
+  } else {
+    // Algorithm not configured — pass through driver-reported index
+    // fields (which are invalid sentinels from the SGP41 driver).
     if (data.is_tvoc_index_valid()) {
       sum.tvoc_index += data.tvoc_index;
       counters.tvoc_index++;
     }
-    if (data.is_tvoc_raw_valid()) {
-      sum.tvoc_raw += data.tvoc_raw;
-      counters.tvoc_raw++;
-    }
     if (data.is_nox_index_valid()) {
       sum.nox_index += data.nox_index;
       counters.nox_index++;
-    }
-    if (data.is_nox_raw_valid()) {
-      sum.nox_raw += data.nox_raw;
-      counters.nox_raw++;
     }
   }
 }

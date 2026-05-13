@@ -74,7 +74,7 @@ sensor type is as simple as leaving its pointer null.
 | `hal/temp_hum_sensor.h` | `TempHumSensor` | — |
 | `hal/pm_sensor.h` | `PMSensor` | `supports_temp_hum()` / `temp_hum_data()` for PM sensors with integrated temp/hum (e.g. PMS5003T) |
 | `hal/co2_sensor.h` | `CO2Sensor` | `supports_temp_hum()` / `temp_hum_data()` for CO2 sensors with integrated temp/hum (e.g. STCC4) |
-| `hal/tvoc_nox_sensor.h` | `TvocNoxSensor` | `run_conditioning()` (default no-op) used during warmup for sensors that need a conditioning cycle (e.g. SGP41) |
+| `hal/tvoc_nox_sensor.h` | `TVOCNOxSensor` | `run_conditioning()` (default no-op) for warmup; `set_compensation()` (default no-op) for ambient temp/hum compensation |
 | `hal/o3_no2_sensor.h` | `O3No2Sensor` | — |
 | `hal/pressure_sensor.h` | `PressureSensor` | — |
 
@@ -107,10 +107,28 @@ Bitmask enum that controls which sensors `start_measures()` polls:
 | Value | Sensors polled |
 |---|---|
 | `PM` | `pms_a`, `pms_b` |
-| `Other` | `temp_hum`, `co2`, `tvoc_nox`, `o3_no2`, `pressure` |
+| `Other` | `temp_hum`, `co2`, `o3_no2`, `pressure` |
+| `TvocNox` | `tvoc_nox` (SGP41 read + gas-index algorithm step when configured) |
 | `All` | All of the above (default) |
 
 Combine with `operator|`; test with `has_group()`.
+
+### Gas-Index Algorithm
+
+`SensorManager` hosts the Sensirion gas-index algorithm for converting raw
+SGP41 VOC/NOx ticks into calibrated 1..500 index values. The algorithm is
+a shared-component concern (sensor-level signal processing), not a
+product-layer concern.
+
+- `configure_tvoc_nox_index(sampling_interval_ms)` — initialises the VOC
+  and NOx algorithm instances. Accepts `1000` or `10000` ms only.
+- `set_tvoc_nox_compensation(temperature_c, humidity_pct)` — forwards
+  ambient compensation to the driver via `TVOCNOxSensor::set_compensation()`.
+- When configured, `_accumulate_tvoc_nox()` feeds each raw sample into the
+  algorithm and produces index values. The algorithm returns `0` during the
+  initial ~45 s blackout; these are treated as invalid and not accumulated.
+- When unconfigured, `_accumulate_tvoc_nox()` passes through driver-reported
+  index fields (which are invalid sentinels from the SGP41 driver).
 
 ### `start_measures(int iterations, SensorGroup groups = SensorGroup::All)`
 
@@ -146,6 +164,7 @@ Tuning knobs live under **AirGradient Sensors** in `menuconfig` (see
 | `CONFIG_AVERAGING_ITERATION_INTERVAL_MS` | `2000` | Target wall-clock duration of one averaging iteration inside `start_measures()` |
 | `CONFIG_SENSOR_WARMUP_DURATION_MS` | `10000` | Total duration of `warmup_sensor()`. Iteration count = this / `SENSOR_WARMUP_INTERVAL_MS` |
 | `CONFIG_SENSOR_WARMUP_INTERVAL_MS` | `1000` | Duration of a single iteration inside `warmup_sensor()` |
+| `CONFIG_SGP41_INDEX_SAMPLING_INTERVAL_1S` / `_10S` | `_10S` | Choice: cadence for the gas-index algorithm sampler (1 s or 10 s). The actual millisecond value is derived in code as `SGP41_INDEX_SAMPLING_INTERVAL_MS` |
 
 For host (`TEST_HOST`) builds, `services/sensor_manager.h` supplies the same
 numeric defaults via `#ifndef` fallbacks so host tests exercise identical
@@ -160,6 +179,9 @@ behavior without `sdkconfig.h`.
 - `components/ads1115/` — generic ADC helper used by AlphaSense
 - `components/embedded-i2c-scd4x/` — Sensirion SCD4x driver wrapped by the
   `scd4x` adapter
+- `components/sensirion-gas-index-algorithm/` — vendored Sensirion
+  gas-index algorithm (float variant) consumed by `SensorManager` for
+  SGP41 raw-to-index conversion
 - `esp_driver_gpio`, `esp_driver_i2c` — ESP-IDF drivers used by various
   sensor implementations
 

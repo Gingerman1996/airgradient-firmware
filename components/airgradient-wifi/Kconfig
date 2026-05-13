@@ -1,0 +1,16 @@
+menu "AirGradient Wi-Fi"
+
+    config AG_WIFI_DHCP_TIMEOUT_MS
+        int "DHCP acquisition timeout (ms)"
+        range 1000 60000
+        default 15000
+        help
+            Maximum time WifiManager waits between L2 association
+            (IP_EVENT_STA_GOT_IP not delivered yet) and DHCP / static IP
+            being applied. ESP-IDF does not expose a DHCP-failure event,
+            so the manager arms an internal timer when the STA associates
+            and cancels it when the IP is acquired. On expiry the manager
+            normalises the disconnect reason to WifiDisconnectReason::dhcp_failed
+            and treats it as non-retriable.
+
+endmenu

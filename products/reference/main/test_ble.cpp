@@ -12,7 +12,7 @@
 
 #include <cinttypes>
 
-#include "ble_server.h"
+#include "hal/ble_server.h"
 #include "nimble_ble_server.h"
 #include "rtos.h"
 
@@ -47,7 +47,7 @@ void run_test_ble(const char *device_name) {
   }
 
 #ifdef TEST_BLE_SECURITY
-  if (!ble.set_security(BleIoCapability::DISPLAY_ONLY, BleAuth::BOND | BleAuth::MITM)) {
+  if (!ble.set_security(AgBleIoCapability::DISPLAY_ONLY, AgBleAuth::BOND | AgBleAuth::MITM)) {
     ESP_LOGE(TAG, "set_security failed");
     ble.deinit();
     return;
@@ -55,7 +55,7 @@ void run_test_ble(const char *device_name) {
   ESP_LOGI(TAG, "security enabled: Display Only + MITM + bonding");
 #endif
 
-  BleService *svc = ble.add_service(TEST_SVC_UUID);
+  AgBleGattService *svc = ble.add_service(TEST_SVC_UUID);
   if (svc == nullptr) {
     ESP_LOGE(TAG, "add_service failed");
     ble.deinit();
@@ -63,13 +63,13 @@ void run_test_ble(const char *device_name) {
   }
 
   // Base properties; security build adds authentication requirements.
-  constexpr uint16_t chr_props = BleProperty::READ | BleProperty::WRITE | BleProperty::NOTIFY
+  constexpr uint16_t chr_props = AgBleProperty::READ | AgBleProperty::WRITE | AgBleProperty::NOTIFY
 #ifdef TEST_BLE_SECURITY
-                                 | BleProperty::READ_AUTHEN | BleProperty::WRITE_AUTHEN
+                                 | AgBleProperty::READ_AUTHEN | AgBleProperty::WRITE_AUTHEN
 #endif
       ;
 
-  BleCharacteristic *ch = svc->add_characteristic(TEST_CHR_UUID, chr_props);
+  AgBleCharacteristic *ch = svc->add_characteristic(TEST_CHR_UUID, chr_props);
   if (ch == nullptr) {
     ESP_LOGE(TAG, "add_characteristic failed");
     ble.deinit();

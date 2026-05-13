@@ -110,8 +110,9 @@ The `SensorGroup` parameter controls which sensor categories are polled:
 | Group | Sensors |
 |---|---|
 | `PM` | `pms_a`, `pms_b` |
-| `Other` | `temp_hum`, `co2`, `tvoc_nox`, `o3_no2`, `pressure` |
-| `All` | Both groups (default) |
+| `Other` | `temp_hum`, `co2`, `o3_no2`, `pressure` |
+| `TvocNox` | `tvoc_nox` (SGP41 read + algorithm step when configured) |
+| `All` | All of the above (default) |
 
 The task encodes both values into the `uint32_t` notification: iterations
 in bits 0-7, group mask in bits 8-15. On decode, zero iterations defaults
@@ -128,39 +129,56 @@ Two sentinel values use the remaining notification space:
 
 ### Task Loop
 
+After warmup, the producer enables a gas-index sampler when an SGP41
+sensor is wired and `configure_tvoc_nox_index()` succeeds. The sampler
+converts the indefinite `task_notify_wait` into a timeout-driven loop so
+the Sensirion algorithm is fed at a fixed cadence (Kconfig-configurable,
+default 10 s) independent of the measurement interval.
+
 ```text
 SensorProducer::run():
+  warmup()
+  sampler_enabled = has_tvoc_nox_sensor() && configure_tvoc_nox_index(TICK_MS)
+
   while _running:
-    notify_value = 0
-    RTOS::task_notify_wait(&notify_value, UINT32_MAX)    // block indefinitely
+    timeout = time_until_next_tick if sampler_enabled else UINT32_MAX
+    notified = task_notify_wait(&notify_value, timeout)
 
-    if !_running:
-      break                                              // stop() was called
+    if !_running: break
 
-    if notify_value == NOTIFY_CALIBRATION:
-      // CO2 calibration (blocking)
-      ...
+    if notified:
+      dispatch to handle_calibration / handle_prepare / handle_measurement
 
-    if notify_value == NOTIFY_PREPARE:
-      // PM warmup after power cycle.  The first warmup read() triggers the
-      // SPS30 recovery path (stop → start → settle) which restarts measurement.
-      // Blocks ~CONFIG_SENSOR_WARMUP_DURATION_MS.  The measurement notification
-      // latches during warmup and is consumed on the next loop iteration.
-      SensorManager::warmup()
-      continue
-
-    iterations = notify_value & 0xFF
-    groups     = (notify_value >> 8) & 0xFF
-
-    if iterations == 0:  iterations = 1                  // zero-iteration guard
-    if groups == None:   groups = All                    // zero-group guard
-
-    // Blocking: with 1 iteration returns as fast as I2C reads complete
-    measures = SensorManager::start_measures(iterations, groups)
-
-    event{} = { type: SensorDataReady, sensor_data: measures }
-    RTOS::queue_send(event_queue, &event, 0)             // non-blocking, drop if full
+    if sampler_enabled && tick_due:
+      handle_sampler_tick()
 ```
+
+#### `handle_measurement(notify_value)`
+
+When the sampler is active, the `TvocNox` bit is stripped from the
+requested group mask so measurement notifications never read SGP41 at an
+irregular cadence. After `start_measures()` returns, the cached TVOC/NOx
+from the most recent sampler tick is spliced into the result before posting
+`SensorDataReady`. When the sampler is inactive, the original mask is
+preserved so `All`/`TvocNox` still reads raw SGP41 values.
+
+The latest valid `temp_hum_a` from each measurement is cached for
+compensation push.
+
+#### `handle_sampler_tick()`
+
+Pushes cached temp/hum compensation to the SGP41 driver (if available),
+then calls `start_measures(1, TvocNox)` and caches the result in
+`_last_tvoc_nox`. Missed ticks are skipped, not replayed.
+
+#### Offline (fast path)
+
+In Offline mode, no `SensorProducer` is created. The fast path calls
+`start_measures(1, All)` directly on `SensorManager`. The algorithm is
+never configured (`_index_configured == false`), so index fields stay at
+invalid sentinels. A retained UX placeholder in `execute_fast_path()`
+(`go_app.cpp`) overwrites the index fields with raw ticks so the display
+still shows a value.
 
 ### Orchestrator Signalling
 

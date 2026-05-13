@@ -41,6 +41,7 @@ markdownlint enforcement.
 | `bq25629` | Texas Instruments BQ25629 driver (slated for replacement) | `airgradient-bms` |
 | `embedded-i2c-scd4x` | Sensirion SCD4x I2C driver | `airgradient-sensors` |
 | `esp-nimble-cpp` | NimBLE C++ wrapper | `airgradient-ble` |
+| `sensirion-gas-index-algorithm` | Sensirion gas-index algorithm (float variant, v3.2.0) | `airgradient-sensors` (`SensorManager`) |
 | `libnmea-esp32` | NMEA parser library | `products/go` GPS service |
 | `u8g2` | u8g2 graphics library | `products/go` display service |
 

@@ -15,6 +15,7 @@ set(COMPONENTS
     airgradient-common
     airgradient-config
     airgradient-gpio
+    airgradient-http-server
     airgradient-nand-storage
     airgradient-payload-cache
     airgradient-sensors

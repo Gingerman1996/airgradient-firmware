@@ -236,6 +236,22 @@ public:
    */
   virtual uint64_t get_time_ms_impl() = 0;
 
+  /**
+   * @brief Virtual implementation of task_notify_wait (mockable).
+   *
+   * Called by the static task_notify_wait() in TEST_HOST mode when a
+   * singleton instance is installed. Default returns false (timeout).
+   */
+  virtual bool task_notify_wait_impl(uint32_t *out_value, uint32_t timeout_ms);
+
+  /**
+   * @brief Virtual implementation of queue_send (mockable).
+   *
+   * Called by the static queue_send() in TEST_HOST mode when a singleton
+   * instance is installed. Default is a no-op.
+   */
+  virtual void queue_send_impl(RtosQueueHandle queue_handle, const void *item, uint32_t timeout_ms);
+
 private:
   static RTOS *get_instance();
 };
