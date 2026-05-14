@@ -241,6 +241,19 @@ bool PowerService::reset_watchdog() {
   return ok;
 }
 
+bool PowerService::set_charge_current_ma(uint16_t current_ma) {
+  if (current_ma != 0 && current_ma == _charge_current_ma) {
+    return true;
+  }
+  if (!_bms.set_charge_current_ma(current_ma)) {
+    AG_LOGW(TAG, "set_charge_current_ma(%u) failed", static_cast<unsigned>(current_ma));
+    return false;
+  }
+  AG_LOGI(TAG, "charge current -> %u mA", static_cast<unsigned>(current_ma));
+  _charge_current_ma = current_ma;
+  return true;
+}
+
 void PowerService::shutdown() {
 #ifndef TEST_HOST
   AG_LOGI(TAG, "shutdown: entering BMS ship mode (QoN)");

@@ -8,6 +8,8 @@
 #ifndef BMS_DEVICE_H
 #define BMS_DEVICE_H
 
+#include <cstdint>
+
 #include "types/bms_types.h"
 
 /// Abstract BMS (Battery Management System) device interface.
@@ -80,6 +82,11 @@ public:
   /// USB stays connected (better for long-term cell health).
   /// @return true if the request succeeded.  Default: not supported.
   virtual bool set_charge_enable(bool) { return false; }
+
+  /// Set the fast-charge current limit (CC mode).  Argument is in mA; the
+  /// driver clamps to the chip's supported range and granularity.
+  /// @return true if the request succeeded.  Default: not supported.
+  virtual bool set_charge_current_ma(uint16_t) { return false; }
 };
 
 #endif // BMS_DEVICE_H

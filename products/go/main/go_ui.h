@@ -196,6 +196,11 @@ private:
   /// 0 = Off (always charge), 1 = On (disable charger when FC=1).
   uint8_t _setting_charge_cutoff = 0;
 
+  /// Mirror of `GoSettings::charge_current_ma` — admin-only row.  Stores
+  /// the option index (0 = 500 mA / 1 = 1000 mA / 2 = 200 mA).  Default 0
+  /// matches the production charge-current default.
+  uint8_t _setting_charge_current = 0;
+
   /// Mirror of `GoSettings::sound_select`.  0 = Off, 1 = Chime, 2 = Tetris.
   uint8_t _setting_play_sound = 0;
 

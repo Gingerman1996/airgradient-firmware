@@ -1,6 +1,7 @@
 #ifndef GO_SETTINGS_H
 #define GO_SETTINGS_H
 
+#include <cstdint>
 #include <string>
 
 #include "config_store.h"
@@ -61,6 +62,13 @@ struct GoSettings {
   /// for long-term cell health on units that sit on USB; default Off so
   /// devices keep topping up at 100 % unless an admin opts in.
   bool charge_cutoff_at_full = false;
+
+  /// Fast-charge current limit applied to the BMS (BQ25629 ICHG), in mA.
+  /// Admin-only; in production the value stays at 500 mA.  Not persisted
+  /// to NVS — exiting admin mode forces the value back to 500 mA so a
+  /// reboot from production can never inherit a non-default ICHG.
+  /// Allowed values are 200 / 500 / 1000.
+  uint16_t charge_current_ma = 500;
 
   /// User-selected melody preference for the Settings → Play Sound row.
   /// Persisted across reboots; the menu fires the chosen melody on every

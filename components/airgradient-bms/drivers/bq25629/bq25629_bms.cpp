@@ -347,3 +347,13 @@ bool BQ25629Bms::set_charge_enable(bool enable) {
   }
   return true;
 }
+
+bool BQ25629Bms::set_charge_current_ma(uint16_t current_ma) {
+  esp_err_t err = _charger.set_charge_current(current_ma);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "set_charge_current(%u) failed: %s", static_cast<unsigned>(current_ma),
+             esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}

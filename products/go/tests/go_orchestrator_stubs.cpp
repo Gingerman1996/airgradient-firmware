@@ -435,6 +435,8 @@ bool PowerService::poll_status(BmsStatus &status) {
 
 bool PowerService::reset_watchdog() { return true; }
 
+bool PowerService::set_charge_current_ma(uint16_t /*current_ma*/) { return true; }
+
 void PowerService::shutdown() { test_spy::shutdown_called = true; }
 
 void PowerService::save_state(const RtcAppState &state) {

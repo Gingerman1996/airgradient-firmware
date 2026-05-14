@@ -137,9 +137,14 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
   }
 
   // --- Common tail ---
+  // charge_current_ma is intentionally not persisted: production firmware
+  // always boots with the default 500 mA in GoSettings.  Push it once so
+  // the BMS cache in PowerService is primed and matches our view.
+  _settings.charge_current_ma = 500;
   _svc.ui_manager.sync_settings(_settings);
   _svc.ui_manager.set_admin_mode(_settings.admin_mode);
   _svc.power_service.set_charge_cutoff_at_full(_settings.charge_cutoff_at_full);
+  _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
   apply_led_brightness();
 
   if (!handoff.measurement_completed) {
@@ -706,7 +711,14 @@ void Orchestrator::on_input(const InputEventData &input) {
     break;
   case UIAction::ExitAdminMode:
     _settings.admin_mode = false;
+    // Reset admin-only overrides that production users must never inherit.
+    // charge_current_ma is in-memory only (not persisted), so a future boot
+    // already defaults to 500 mA — but enforce it here too so the BMS is
+    // reconciled immediately on exit without waiting for the next reboot.
+    _settings.charge_current_ma = 500;
     save_go_settings(_config_store, _settings);
+    _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
+    _svc.ui_manager.sync_settings(_settings);
     _svc.ui_manager.set_admin_mode(false);
     _svc.ui_manager.show_snackbar("Admin mode off");
     AG_LOGI(TAG, "admin mode exited via Settings menu");
@@ -828,6 +840,7 @@ void Orchestrator::apply_settings_change() {
   reschedule_sensor_timer(previous_settings);
   _svc.gps_service.set_posting_interval_ms(_settings.gps_interval_seconds * 1000);
   _svc.power_service.set_charge_cutoff_at_full(_settings.charge_cutoff_at_full);
+  _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
   apply_led_brightness();
 
   const bool is_gps_active_now = is_gps_active();

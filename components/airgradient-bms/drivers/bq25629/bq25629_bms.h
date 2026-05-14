@@ -48,6 +48,7 @@ public:
   bool enter_ship_mode() override;
   bool configure_pmid_mode(BmsPmidMode mode) override;
   bool set_charge_enable(bool enable) override;
+  bool set_charge_current_ma(uint16_t current_ma) override;
 
 private:
   /// One-shot OTG configuration applied during init():

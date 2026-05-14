@@ -110,6 +110,13 @@ public:
   /// at 100 %.  Default false; the admin Settings menu opts in.
   void set_charge_cutoff_at_full(bool on) { _charge_cutoff_at_full = on; }
 
+  /// Update the BMS fast-charge current limit (CC mode), in mA.  Idempotent:
+  /// only issues an I²C write when the requested value differs from the
+  /// last applied value.  Admin-only — production firmware leaves the
+  /// charger at the board's default (500 mA).
+  /// @return true if the value matched cache or the write succeeded.
+  bool set_charge_current_ma(uint16_t current_ma);
+
   // -------------------------------------------------------------------------
   // BMS operations (called by orchestrator on timer)
   // -------------------------------------------------------------------------
@@ -272,6 +279,12 @@ private:
   /// Admin-only opt-in for the FC=1 auto-disable behaviour.  False = the
   /// charger is always left enabled (production default).
   bool _charge_cutoff_at_full = false;
+
+  /// Last fast-charge current applied to the BMS, in mA.  0 = no value
+  /// pushed yet; the first set_charge_current_ma() call always writes
+  /// regardless of the cache so the chip's power-on default cannot drift
+  /// from the orchestrator's view.
+  uint16_t _charge_current_ma = 0;
 
   /// Configure timer and GPIO wake sources before entering sleep.
   /// Wrapped in #ifndef TEST_HOST — not callable from host test builds.

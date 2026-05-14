@@ -292,7 +292,7 @@ void print_settings(const GoSettings &settings) {
           "** settings | meas_int=%d | gps_int=%d gps_mode=%d "
           "op_mode=%d | inactivity_to=%d auto_lock=%d | fahrenheit=%s usaqi=%s | "
           "led_brightness=%u back_led_brightness=%u touch_led=%u | admin=%s blearn=%s "
-          "chg_cutoff=%s sound=%s | device_name=%s **",
+          "chg_cutoff=%s chg_curr=%umA sound=%s | device_name=%s **",
           settings.measure_interval_seconds, settings.gps_interval_seconds, settings.gps_mode,
           settings.operating_mode, settings.inactivity_timeout_seconds, settings.auto_lock_seconds,
           settings.use_fahrenheit ? "true" : "false", settings.pm_use_usaqi ? "true" : "false",
@@ -300,5 +300,6 @@ void print_settings(const GoSettings &settings) {
           settings.admin_mode ? "true" : "false",
           settings.battery_learning_enabled ? "true" : "false",
           settings.charge_cutoff_at_full ? "true" : "false",
+          static_cast<unsigned>(settings.charge_current_ma),
           sound_select_name(settings.sound_select), settings.device_name.c_str());
 }
