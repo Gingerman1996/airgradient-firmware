@@ -17,6 +17,7 @@ constexpr const char *KEY_PM_USE_USAQI = "pmu";
 constexpr const char *KEY_AUTO_LOCK_SECONDS = "als";
 constexpr const char *KEY_LED_BRIGHTNESS = "lb";
 constexpr const char *KEY_BACK_LED_BRIGHTNESS = "blb";
+constexpr const char *KEY_TOUCH_LED_BRIGHTNESS = "tlb";
 constexpr const char *KEY_ADMIN_MODE = "adm";
 constexpr const char *KEY_BATTERY_LEARNING = "blr";
 constexpr const char *KEY_SOUND_SELECT = "sd";
@@ -40,6 +41,9 @@ bool is_auto_lock_valid(int value) {
 // validator accepts both ranges; the UI layer enforces per-field option
 // counts.
 bool is_led_brightness_valid(int value) { return value >= 0 && value <= 5; }
+
+// Touch-feedback LEDs use a 3-level scale: 0=Off, 1=Dim, 2=Bright.
+bool is_touch_led_brightness_valid(int value) { return value >= 0 && value <= 2; }
 
 bool is_device_name_valid(const std::string &value) { return !value.empty() && value.size() <= 64; }
 
@@ -127,6 +131,12 @@ GoSettings load_go_settings(ConfigStore &store) {
     settings.back_led_brightness = static_cast<uint8_t>(back_led_brightness);
   }
 
+  int touch_led_brightness = 0;
+  if (store.get_int(KEY_TOUCH_LED_BRIGHTNESS, touch_led_brightness) == ConfigStoreResult::OK &&
+      is_touch_led_brightness_valid(touch_led_brightness)) {
+    settings.touch_led_brightness = static_cast<uint8_t>(touch_led_brightness);
+  }
+
   bool admin_mode = false;
   if (store.get_bool(KEY_ADMIN_MODE, admin_mode) == ConfigStoreResult::OK) {
     settings.admin_mode = admin_mode;
@@ -176,6 +186,10 @@ bool save_go_settings(ConfigStore &store, const GoSettings &settings) {
   }
 
   if (!is_led_brightness_valid(settings.back_led_brightness)) {
+    return false;
+  }
+
+  if (!is_touch_led_brightness_valid(settings.touch_led_brightness)) {
     return false;
   }
 
@@ -232,6 +246,11 @@ bool save_go_settings(ConfigStore &store, const GoSettings &settings) {
     return false;
   }
 
+  if (store.set_int(KEY_TOUCH_LED_BRIGHTNESS, settings.touch_led_brightness) !=
+      ConfigStoreResult::OK) {
+    return false;
+  }
+
   if (store.set_bool(KEY_ADMIN_MODE, settings.admin_mode) != ConfigStoreResult::OK) {
     return false;
   }
@@ -262,12 +281,12 @@ void print_settings(const GoSettings &settings) {
   AG_LOGI(TAG,
           "** settings | meas_int=%d | gps_int=%d gps_mode=%d "
           "op_mode=%d | inactivity_to=%d auto_lock=%d | fahrenheit=%s usaqi=%s | "
-          "led_brightness=%u back_led_brightness=%u | admin=%s blearn=%s sound=%s | "
+          "led_brightness=%u back_led_brightness=%u touch_led=%u | admin=%s blearn=%s sound=%s | "
           "device_name=%s **",
           settings.measure_interval_seconds, settings.gps_interval_seconds, settings.gps_mode,
           settings.operating_mode, settings.inactivity_timeout_seconds, settings.auto_lock_seconds,
           settings.use_fahrenheit ? "true" : "false", settings.pm_use_usaqi ? "true" : "false",
-          settings.led_brightness, settings.back_led_brightness,
+          settings.led_brightness, settings.back_led_brightness, settings.touch_led_brightness,
           settings.admin_mode ? "true" : "false",
           settings.battery_learning_enabled ? "true" : "false",
           sound_select_name(settings.sound_select), settings.device_name.c_str());

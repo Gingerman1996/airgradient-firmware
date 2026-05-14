@@ -29,12 +29,18 @@ struct GoSettings {
   /// 6-level 0–10 % scale: 0=Off, 1=2%, 2=4%, 3=6%, 4=8%, 5=10%.  The
   /// display LEDs are small and very bright; even 10 % is visible
   /// indoors so the user-facing scale is intentionally compressed.
-  /// Default = 5 (10 %, the brightest available option).
-  uint8_t led_brightness = 5;
+  /// Default = 0 (Off) so production units ship dark; user opts in.
+  uint8_t led_brightness = 0;
 
   /// Back AQI LEDs (LED3/5/6/7/9 — PM2.5 colour indicator).
   /// 5-level 0–100 % scale: 0=Off, 1=25%, 2=50%, 3=75%, 4=100%.
-  uint8_t back_led_brightness = 4;
+  /// Default = 0 (Off); user opts in.
+  uint8_t back_led_brightness = 0;
+
+  /// Touch-feedback LEDs (LED1/LED2/LED10 — white flash on accepted
+  /// capacitive touch).  3-level scale: 0=Off, 1=Dim, 2=Bright.
+  /// Off suppresses the flash entirely.  Default = 0 (Off).
+  uint8_t touch_led_brightness = 0;
 
   // --- Admin / calibration mode ---
   /// When true, factory-calibration affordances are exposed.  Default

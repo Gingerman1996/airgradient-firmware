@@ -37,6 +37,11 @@ static const char *const DISPLAY_LED_BRIGHTNESS_OPTIONS[] = {"Off", "2%", "4%",
                                                              "6%", "8%", "10%"};
 static constexpr uint8_t DISPLAY_LED_BRIGHTNESS_COUNT = 6;
 
+// Touch-feedback LEDs (LED1/LED2/LED10) — short white flash on accepted touch.
+// 3-level scale: Off suppresses the flash; Dim ≈10 %, Bright ≈30 %.
+static const char *const TOUCH_LED_OPTIONS[] = {"Off", "Dim", "Bright"};
+static constexpr uint8_t TOUCH_LED_COUNT = 3;
+
 // Battery-learning UX toggle — Off/On.  Only visible in admin mode.
 static const char *const BATTERY_LEARNING_OPTIONS[] = {"Off", "On"};
 static constexpr uint8_t BATTERY_LEARNING_COUNT = 2;
@@ -66,16 +71,17 @@ static constexpr uint8_t SETTING_MODE = 6;
 static constexpr uint8_t SETTING_AUTO_LOCK = 7;
 static constexpr uint8_t SETTING_LED_BRIGHTNESS = 8;
 static constexpr uint8_t SETTING_BACK_LED_BRIGHTNESS = 9;
-static constexpr uint8_t SETTING_PLAY_SOUND = 10;
-static constexpr uint8_t SETTING_CO2_CALIBRATION = 11;
-static constexpr uint8_t SETTING_CLEAR_DATA = 12;
+static constexpr uint8_t SETTING_TOUCH_LED = 10;
+static constexpr uint8_t SETTING_PLAY_SOUND = 11;
+static constexpr uint8_t SETTING_CO2_CALIBRATION = 12;
+static constexpr uint8_t SETTING_CLEAR_DATA = 13;
 // Admin-only rows live at the bottom so move_settings() can skip them via
 // `total - ADMIN_HIDDEN_ROWS` when admin mode is off.
-static constexpr uint8_t SETTING_BATTERY_LEARNING = 13;
-static constexpr uint8_t SETTING_EXIT_ADMIN = 14;
+static constexpr uint8_t SETTING_BATTERY_LEARNING = 14;
+static constexpr uint8_t SETTING_EXIT_ADMIN = 15;
 static constexpr uint8_t ADMIN_HIDDEN_ROWS = 2;
 
-static constexpr uint8_t SETTINGS_TOTAL = 15;       // indices 0..14
+static constexpr uint8_t SETTINGS_TOTAL = 16;       // indices 0..15
 static constexpr uint8_t TAG_LIST_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t MAIN_MENU_TOTAL = 4;       // indices 0..3
 static constexpr uint8_t CONFIRM_TOTAL = 5;         // indices 0..4
@@ -351,6 +357,8 @@ void UIManager::sync_settings(const GoSettings &s) {
                                 : static_cast<uint8_t>(DISPLAY_LED_BRIGHTNESS_COUNT - 1);
   _setting_back_led_brightness =
       (s.back_led_brightness < LED_BRIGHTNESS_COUNT) ? s.back_led_brightness : 4;
+  _setting_touch_led =
+      (s.touch_led_brightness < TOUCH_LED_COUNT) ? s.touch_led_brightness : 0;
   _setting_battery_learning = s.battery_learning_enabled ? 1 : 0;
 
   const uint8_t sound_idx = static_cast<uint8_t>(s.sound_select);
@@ -417,6 +425,8 @@ void UIManager::apply_to_settings(GoSettings &settings) const {
   settings.back_led_brightness = (_setting_back_led_brightness < LED_BRIGHTNESS_COUNT)
                                      ? _setting_back_led_brightness
                                      : 4;
+  settings.touch_led_brightness =
+      (_setting_touch_led < TOUCH_LED_COUNT) ? _setting_touch_led : 0;
   settings.battery_learning_enabled = (_setting_battery_learning != 0);
   settings.sound_select = (_setting_play_sound < SOUND_OPTIONS_COUNT)
                               ? static_cast<SoundSelect>(_setting_play_sound)
@@ -573,6 +583,8 @@ uint8_t UIManager::setting_option_count(uint8_t setting_id) const {
     return DISPLAY_LED_BRIGHTNESS_COUNT;
   case SETTING_BACK_LED_BRIGHTNESS:
     return LED_BRIGHTNESS_COUNT;
+  case SETTING_TOUCH_LED:
+    return TOUCH_LED_COUNT;
   case SETTING_PLAY_SOUND:
     return SOUND_OPTIONS_COUNT;
   case SETTING_BATTERY_LEARNING:
@@ -600,6 +612,8 @@ uint8_t UIManager::setting_current_option(uint8_t setting_id) const {
     return _setting_led_brightness;
   case SETTING_BACK_LED_BRIGHTNESS:
     return _setting_back_led_brightness;
+  case SETTING_TOUCH_LED:
+    return _setting_touch_led;
   case SETTING_PLAY_SOUND:
     return _setting_play_sound;
   case SETTING_BATTERY_LEARNING:
@@ -638,6 +652,9 @@ void UIManager::apply_setting_choice(uint8_t option_index) {
     break;
   case SETTING_BACK_LED_BRIGHTNESS:
     _setting_back_led_brightness = option_index;
+    break;
+  case SETTING_TOUCH_LED:
+    _setting_touch_led = option_index;
     break;
   case SETTING_PLAY_SOUND:
     _setting_play_sound = option_index;
@@ -1007,6 +1024,11 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
       (void)snprintf(label, sizeof(label), "AQI LED: %s",
                      LED_BRIGHTNESS_OPTIONS[_setting_back_led_brightness]);
       break;
+    case SETTING_TOUCH_LED: {
+      const uint8_t idx = (_setting_touch_led < TOUCH_LED_COUNT) ? _setting_touch_led : 0;
+      (void)snprintf(label, sizeof(label), "Touch LED: %s", TOUCH_LED_OPTIONS[idx]);
+      break;
+    }
     case SETTING_PLAY_SOUND:
       (void)snprintf(label, sizeof(label), "Play Sound: %s",
                      SOUND_OPTIONS[_setting_play_sound]);
@@ -1077,6 +1099,9 @@ void UIManager::populate_settings_choice_rows(DisplayValues &v) const {
     break;
   case SETTING_BACK_LED_BRIGHTNESS:
     options = LED_BRIGHTNESS_OPTIONS;
+    break;
+  case SETTING_TOUCH_LED:
+    options = TOUCH_LED_OPTIONS;
     break;
   case SETTING_PLAY_SOUND:
     options = SOUND_OPTIONS;

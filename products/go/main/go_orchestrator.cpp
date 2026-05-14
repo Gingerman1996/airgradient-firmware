@@ -643,19 +643,26 @@ void Orchestrator::on_input(const InputEventData &input) {
     return;
   }
 
-  // Unlocked: white LED flash on accepted touch — 30 % brightness for 100 ms
-  switch (input.source) {
-  case InputSource::TouchDown:
-    _svc.led.flash_white(LedService::Led::Right, 76, 100);
-    break;
-  case InputSource::TouchUp:
-    _svc.led.flash_white(LedService::Led::Left, 76, 100);
-    break;
-  case InputSource::TouchEnter:
-    _svc.led.flash_white(LedService::Led::Select, 76, 100);
-    break;
-  default:
-    break;
+  // Unlocked: white LED flash on accepted touch, gated by the Touch LED
+  // setting.  0=Off skips the flash entirely; 1=Dim ≈10 % (25/255);
+  // 2=Bright ≈30 % (76/255, the historical default).
+  static constexpr uint8_t TOUCH_LED_PWM[3] = {0, 25, 76};
+  const uint8_t touch_pwm =
+      TOUCH_LED_PWM[(_settings.touch_led_brightness < 3) ? _settings.touch_led_brightness : 2];
+  if (touch_pwm != 0) {
+    switch (input.source) {
+    case InputSource::TouchDown:
+      _svc.led.flash_white(LedService::Led::Right, touch_pwm, 100);
+      break;
+    case InputSource::TouchUp:
+      _svc.led.flash_white(LedService::Led::Left, touch_pwm, 100);
+      break;
+    case InputSource::TouchEnter:
+      _svc.led.flash_white(LedService::Led::Select, touch_pwm, 100);
+      break;
+    default:
+      break;
+    }
   }
 
   // Detect the 5-rapid-Select-taps admin-entry pattern.  Runs in parallel

@@ -181,8 +181,9 @@ private:
   uint8_t _setting_gps_mode = 1;         // 1="On When Tracking"
   uint8_t _setting_mode = 1;             // 1="Portable"
   uint8_t _setting_auto_lock = 0;        // 0="Off"
-  uint8_t _setting_led_brightness = 4;   // 0=Off, 1=25%, 2=50%, 3=75%, 4=100%
-  uint8_t _setting_back_led_brightness = 4; // AQI back LEDs — same scale
+  uint8_t _setting_led_brightness = 0;   // 0=Off; production default off
+  uint8_t _setting_back_led_brightness = 0; // AQI back LEDs — production default off
+  uint8_t _setting_touch_led = 0;        // 0=Off, 1=Dim, 2=Bright
 
   /// Mirror of `GoSettings::admin_mode` — only used for menu row visibility.
   bool _admin_mode = false;
