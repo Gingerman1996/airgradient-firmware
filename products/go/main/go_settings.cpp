@@ -20,6 +20,7 @@ constexpr const char *KEY_BACK_LED_BRIGHTNESS = "blb";
 constexpr const char *KEY_TOUCH_LED_BRIGHTNESS = "tlb";
 constexpr const char *KEY_ADMIN_MODE = "adm";
 constexpr const char *KEY_BATTERY_LEARNING = "blr";
+constexpr const char *KEY_CHARGE_CUTOFF = "cco";
 constexpr const char *KEY_SOUND_SELECT = "sd";
 
 bool is_measure_interval_valid(int value) { return value >= 1 && value <= 3600; }
@@ -147,6 +148,11 @@ GoSettings load_go_settings(ConfigStore &store) {
     settings.battery_learning_enabled = battery_learning_enabled;
   }
 
+  bool charge_cutoff_at_full = false;
+  if (store.get_bool(KEY_CHARGE_CUTOFF, charge_cutoff_at_full) == ConfigStoreResult::OK) {
+    settings.charge_cutoff_at_full = charge_cutoff_at_full;
+  }
+
   int sound_select = 0;
   if (store.get_int(KEY_SOUND_SELECT, sound_select) == ConfigStoreResult::OK &&
       is_sound_select_valid(sound_select)) {
@@ -260,6 +266,10 @@ bool save_go_settings(ConfigStore &store, const GoSettings &settings) {
     return false;
   }
 
+  if (store.set_bool(KEY_CHARGE_CUTOFF, settings.charge_cutoff_at_full) != ConfigStoreResult::OK) {
+    return false;
+  }
+
   if (!is_sound_select_valid(static_cast<int>(settings.sound_select))) {
     return false;
   }
@@ -281,13 +291,14 @@ void print_settings(const GoSettings &settings) {
   AG_LOGI(TAG,
           "** settings | meas_int=%d | gps_int=%d gps_mode=%d "
           "op_mode=%d | inactivity_to=%d auto_lock=%d | fahrenheit=%s usaqi=%s | "
-          "led_brightness=%u back_led_brightness=%u touch_led=%u | admin=%s blearn=%s sound=%s | "
-          "device_name=%s **",
+          "led_brightness=%u back_led_brightness=%u touch_led=%u | admin=%s blearn=%s "
+          "chg_cutoff=%s sound=%s | device_name=%s **",
           settings.measure_interval_seconds, settings.gps_interval_seconds, settings.gps_mode,
           settings.operating_mode, settings.inactivity_timeout_seconds, settings.auto_lock_seconds,
           settings.use_fahrenheit ? "true" : "false", settings.pm_use_usaqi ? "true" : "false",
           settings.led_brightness, settings.back_led_brightness, settings.touch_led_brightness,
           settings.admin_mode ? "true" : "false",
           settings.battery_learning_enabled ? "true" : "false",
+          settings.charge_cutoff_at_full ? "true" : "false",
           sound_select_name(settings.sound_select), settings.device_name.c_str());
 }

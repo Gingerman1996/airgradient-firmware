@@ -147,18 +147,21 @@ PowerSnapshot PowerService::poll_bms() {
 
   // --- Auto-disable charging when the cell is full ---
   // FG declares Full Charge (FC flag) when voltage reaches Charge Voltage
-  // AND |current| drops below Taper Rate.  At that point we clear the
-  // BMS's EN_CHG bit so the cell isn't held at 100% while USB stays
-  // plugged in (better for long-term cell health and useful for keeping
-  // a serial console attached to a fully-charged unit).  When the cell
-  // self-discharges or load drains it enough for FC to clear, we
-  // re-enable.  Edge-triggered — one I²C write per state change.
+  // AND |current| drops below Taper Rate.  When the admin opt-in
+  // `_charge_cutoff_at_full` is set, we clear the BMS's EN_CHG bit so the
+  // cell isn't held at 100 % while USB stays plugged in (better for
+  // long-term cell health).  When the cell self-discharges or load
+  // drains it enough for FC to clear, we re-enable.  When the opt-in is
+  // off (production default), the charger is always left enabled — the
+  // BMS itself stops charging once the cell is full but resumes top-ups.
+  // Edge-triggered — one I²C write per state change.
   if (fg.flags_ok) {
-    const bool want_charge = !fg.fc();
+    const bool want_charge = _charge_cutoff_at_full ? !fg.fc() : true;
     if (want_charge != _charge_enabled) {
       if (_bms.set_charge_enable(want_charge)) {
         _charge_enabled = want_charge;
-        AG_LOGI(TAG, "charging %s (FC=%d)", want_charge ? "ENABLED" : "DISABLED", fg.fc());
+        AG_LOGI(TAG, "charging %s (cutoff=%d FC=%d)",
+                want_charge ? "ENABLED" : "DISABLED", _charge_cutoff_at_full, fg.fc());
       } else {
         AG_LOGW(TAG, "set_charge_enable(%d) failed", want_charge);
       }

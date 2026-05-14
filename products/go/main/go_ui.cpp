@@ -46,6 +46,10 @@ static constexpr uint8_t TOUCH_LED_COUNT = 3;
 static const char *const BATTERY_LEARNING_OPTIONS[] = {"Off", "On"};
 static constexpr uint8_t BATTERY_LEARNING_COUNT = 2;
 
+// Charge cutoff (auto-disable charger when FC=1) — Off/On.  Admin-only.
+static const char *const CHARGE_CUTOFF_OPTIONS[] = {"Off", "On"};
+static constexpr uint8_t CHARGE_CUTOFF_COUNT = 2;
+
 // Play Sound — pick a melody to preview.  Confirming the choice also stores
 // the selection (so future event-driven plays can respect it).
 static const char *const SOUND_OPTIONS[] = {"Off", "Chime", "Tetris"};
@@ -78,10 +82,11 @@ static constexpr uint8_t SETTING_CLEAR_DATA = 13;
 // Admin-only rows live at the bottom so move_settings() can skip them via
 // `total - ADMIN_HIDDEN_ROWS` when admin mode is off.
 static constexpr uint8_t SETTING_BATTERY_LEARNING = 14;
-static constexpr uint8_t SETTING_EXIT_ADMIN = 15;
-static constexpr uint8_t ADMIN_HIDDEN_ROWS = 2;
+static constexpr uint8_t SETTING_CHARGE_CUTOFF = 15;
+static constexpr uint8_t SETTING_EXIT_ADMIN = 16;
+static constexpr uint8_t ADMIN_HIDDEN_ROWS = 3;
 
-static constexpr uint8_t SETTINGS_TOTAL = 16;       // indices 0..15
+static constexpr uint8_t SETTINGS_TOTAL = 17;       // indices 0..16
 static constexpr uint8_t TAG_LIST_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t MAIN_MENU_TOTAL = 4;       // indices 0..3
 static constexpr uint8_t CONFIRM_TOTAL = 5;         // indices 0..4
@@ -360,6 +365,7 @@ void UIManager::sync_settings(const GoSettings &s) {
   _setting_touch_led =
       (s.touch_led_brightness < TOUCH_LED_COUNT) ? s.touch_led_brightness : 0;
   _setting_battery_learning = s.battery_learning_enabled ? 1 : 0;
+  _setting_charge_cutoff = s.charge_cutoff_at_full ? 1 : 0;
 
   const uint8_t sound_idx = static_cast<uint8_t>(s.sound_select);
   _setting_play_sound = (sound_idx < SOUND_OPTIONS_COUNT) ? sound_idx : 0;
@@ -428,6 +434,7 @@ void UIManager::apply_to_settings(GoSettings &settings) const {
   settings.touch_led_brightness =
       (_setting_touch_led < TOUCH_LED_COUNT) ? _setting_touch_led : 0;
   settings.battery_learning_enabled = (_setting_battery_learning != 0);
+  settings.charge_cutoff_at_full = (_setting_charge_cutoff != 0);
   settings.sound_select = (_setting_play_sound < SOUND_OPTIONS_COUNT)
                               ? static_cast<SoundSelect>(_setting_play_sound)
                               : SoundSelect::Off;
@@ -589,6 +596,8 @@ uint8_t UIManager::setting_option_count(uint8_t setting_id) const {
     return SOUND_OPTIONS_COUNT;
   case SETTING_BATTERY_LEARNING:
     return BATTERY_LEARNING_COUNT;
+  case SETTING_CHARGE_CUTOFF:
+    return CHARGE_CUTOFF_COUNT;
   default:
     return 0;
   }
@@ -618,6 +627,8 @@ uint8_t UIManager::setting_current_option(uint8_t setting_id) const {
     return _setting_play_sound;
   case SETTING_BATTERY_LEARNING:
     return _setting_battery_learning;
+  case SETTING_CHARGE_CUTOFF:
+    return _setting_charge_cutoff;
   default:
     return 0;
   }
@@ -661,6 +672,9 @@ void UIManager::apply_setting_choice(uint8_t option_index) {
     break;
   case SETTING_BATTERY_LEARNING:
     _setting_battery_learning = option_index;
+    break;
+  case SETTING_CHARGE_CUTOFF:
+    _setting_charge_cutoff = option_index;
     break;
   default:
     break;
@@ -789,7 +803,8 @@ UIActionResult UIManager::dispatch_settings(InputSource source, InputType type) 
       result.action = UIAction::ExitAdminMode;
     } else if ((_settings_index >= SETTING_UNITS &&
                 _settings_index <= SETTING_PLAY_SOUND) ||
-               (_settings_index == SETTING_BATTERY_LEARNING && _admin_mode)) {
+               (_settings_index == SETTING_BATTERY_LEARNING && _admin_mode) ||
+               (_settings_index == SETTING_CHARGE_CUTOFF && _admin_mode)) {
       // Open choice screen for this setting
       open_settings_choice(_settings_index);
     }
@@ -1047,6 +1062,14 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
       (void)snprintf(label, sizeof(label), "Battery Learning: %s",
                      BATTERY_LEARNING_OPTIONS[_setting_battery_learning]);
       break;
+    case SETTING_CHARGE_CUTOFF:
+      // Admin-only — hidden in production.
+      if (!_admin_mode) {
+        continue;
+      }
+      (void)snprintf(label, sizeof(label), "Charge Cutoff: %s",
+                     CHARGE_CUTOFF_OPTIONS[_setting_charge_cutoff]);
+      break;
     case SETTING_EXIT_ADMIN:
       // Hidden in production — render only when admin mode is active.
       if (!_admin_mode) {
@@ -1108,6 +1131,9 @@ void UIManager::populate_settings_choice_rows(DisplayValues &v) const {
     break;
   case SETTING_BATTERY_LEARNING:
     options = BATTERY_LEARNING_OPTIONS;
+    break;
+  case SETTING_CHARGE_CUTOFF:
+    options = CHARGE_CUTOFF_OPTIONS;
     break;
   default:
     break;

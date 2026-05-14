@@ -104,6 +104,12 @@ public:
   /// estimate.  Pass nullptr to detach.  Not owned.
   void set_fuel_gauge(BQ27427 *fg) { _fuel_gauge = fg; }
 
+  /// Enable or disable the "auto-disable charger on FC=1" behaviour.
+  /// When false, the charger is always left enabled regardless of the
+  /// fuel gauge's Full Charge flag — devices on USB will trickle-charge
+  /// at 100 %.  Default false; the admin Settings menu opts in.
+  void set_charge_cutoff_at_full(bool on) { _charge_cutoff_at_full = on; }
+
   // -------------------------------------------------------------------------
   // BMS operations (called by orchestrator on timer)
   // -------------------------------------------------------------------------
@@ -262,6 +268,10 @@ private:
   /// write when the desired state actually changes (edge-trigger).
   /// Default to "true" (enabled) since BQ25629::init() leaves charging on.
   bool _charge_enabled = true;
+
+  /// Admin-only opt-in for the FC=1 auto-disable behaviour.  False = the
+  /// charger is always left enabled (production default).
+  bool _charge_cutoff_at_full = false;
 
   /// Configure timer and GPIO wake sources before entering sleep.
   /// Wrapped in #ifndef TEST_HOST — not callable from host test builds.

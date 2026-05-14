@@ -56,6 +56,12 @@ struct GoSettings {
   /// entry; admin can disable the notifications once Qmax has converged.
   bool battery_learning_enabled = true;
 
+  /// When true, clear the BMS EN_CHG bit as soon as the fuel gauge
+  /// reports Full Charge (FC=1), and re-enable when FC clears.  Better
+  /// for long-term cell health on units that sit on USB; default Off so
+  /// devices keep topping up at 100 % unless an admin opts in.
+  bool charge_cutoff_at_full = false;
+
   /// User-selected melody preference for the Settings → Play Sound row.
   /// Persisted across reboots; the menu fires the chosen melody on every
   /// re-confirm.  Default Off so production devices stay quiet unless the

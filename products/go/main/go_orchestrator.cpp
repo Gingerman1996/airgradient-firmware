@@ -139,6 +139,7 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
   // --- Common tail ---
   _svc.ui_manager.sync_settings(_settings);
   _svc.ui_manager.set_admin_mode(_settings.admin_mode);
+  _svc.power_service.set_charge_cutoff_at_full(_settings.charge_cutoff_at_full);
   apply_led_brightness();
 
   if (!handoff.measurement_completed) {
@@ -826,6 +827,7 @@ void Orchestrator::apply_settings_change() {
   // Propagate runtime changes to services
   reschedule_sensor_timer(previous_settings);
   _svc.gps_service.set_posting_interval_ms(_settings.gps_interval_seconds * 1000);
+  _svc.power_service.set_charge_cutoff_at_full(_settings.charge_cutoff_at_full);
   apply_led_brightness();
 
   const bool is_gps_active_now = is_gps_active();

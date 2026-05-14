@@ -192,6 +192,10 @@ private:
   /// the admin-only Settings row.  0 = Off, 1 = On.
   uint8_t _setting_battery_learning = 1;
 
+  /// Mirror of `GoSettings::charge_cutoff_at_full` — admin-only row.
+  /// 0 = Off (always charge), 1 = On (disable charger when FC=1).
+  uint8_t _setting_charge_cutoff = 0;
+
   /// Mirror of `GoSettings::sound_select`.  0 = Off, 1 = Chime, 2 = Tetris.
   uint8_t _setting_play_sound = 0;
 
