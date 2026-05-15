@@ -11,6 +11,10 @@
 
 #include "ag_log.h"
 
+#ifndef TEST_HOST
+#include <driver/gpio.h>
+#endif
+
 namespace {
 constexpr const char *TAG = "Lis2dh12";
 } // namespace
@@ -88,6 +92,112 @@ bool LIS2DH12::read(Reading &out) {
   out.y_mg = static_cast<int16_t>(raw_y >> 4);
   out.z_mg = static_cast<int16_t>(raw_z >> 4);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Motion detection — high-pass-filtered "any axis high event" on INT1.
+// ---------------------------------------------------------------------------
+
+bool LIS2DH12::enable_motion_int1(uint16_t threshold_mg) {
+  // 1 LSB of INT1_THS = 16 mg at ±2 g FS (datasheet table 33).
+  // Clamp into the 7-bit threshold field.
+  uint8_t ths = static_cast<uint8_t>(threshold_mg / 16);
+  if (ths == 0) ths = 1;
+  if (ths > 0x7F) ths = 0x7F;
+
+  // CTRL_REG2 = 0x01 → HPM=normal, default cutoff (~ODR/50), HPIS1=1 routes
+  // the high-pass-filtered data into Interrupt 1. Removes the gravity DC
+  // bias so stationary acceleration of ~1 g doesn't trip the threshold.
+  if (!_write_reg(REG_CTRL_REG2, 0x01)) return false;
+  // CTRL_REG3 = 0x40 → I1_IA1 routes Interrupt 1 source to the INT1 pin.
+  if (!_write_reg(REG_CTRL_REG3, 0x40)) return false;
+  // CTRL_REG5 = 0x08 → LIR_INT1 latches the source register until read.
+  if (!_write_reg(REG_CTRL_REG5, 0x08)) return false;
+  // INT1_THS, INT1_DURATION (single-sample event = 0).
+  if (!_write_reg(REG_INT1_THS, ths)) return false;
+  if (!_write_reg(REG_INT1_DURATION, 0x00)) return false;
+  // INT1_CFG = 0x2A → XHIE | YHIE | ZHIE (high-event on any axis, OR).
+  if (!_write_reg(REG_INT1_CFG, 0x2A)) return false;
+
+  AG_LOGI(TAG, "motion INT1 enabled: threshold %u mg (%u LSB)",
+          static_cast<unsigned>(threshold_mg), static_cast<unsigned>(ths));
+  return true;
+}
+
+uint8_t LIS2DH12::read_int1_src() {
+  uint8_t v = 0;
+  if (!_read_reg(REG_INT1_SRC, v)) return 0;
+  return v;
+}
+
+// ---------------------------------------------------------------------------
+// Interrupt-driven motion-log task — self-contained, no orchestrator plumbing.
+// ---------------------------------------------------------------------------
+
+namespace {
+struct MotionTaskCtx {
+  LIS2DH12 *self;
+};
+
+void motion_log_task_entry(void *arg) {
+  auto *ctx = static_cast<MotionTaskCtx *>(arg);
+  LIS2DH12 *self = ctx->self;
+  // Poll the volatile flag set by the GPIO ISR. 50 ms latency is well below
+  // human-perception of "I shook it" → "log appeared".
+  for (;;) {
+    RTOS::delay_ms(50);
+    if (!self->motion_flag) continue;
+    self->motion_flag = false;
+    const uint8_t src = self->read_int1_src(); // clears latch
+    LIS2DH12::Reading r{};
+    if (self->read(r)) {
+      AG_LOGI(TAG, "MOTION src=0x%02X  x=%+d mg  y=%+d mg  z=%+d mg",
+              src, r.x_mg, r.y_mg, r.z_mg);
+    } else {
+      AG_LOGW(TAG, "MOTION src=0x%02X (read failed)", src);
+    }
+  }
+}
+} // namespace
+
+void LIS2DH12::start_motion_log_task(int int_pin, uint16_t threshold_mg) {
+  if (!enable_motion_int1(threshold_mg)) {
+    AG_LOGE(TAG, "start_motion_log_task: enable_motion_int1 failed");
+    return;
+  }
+
+#ifndef TEST_HOST
+  // Configure ESP32 GPIO as input, no internal pull (LIS2DH12 INT1 is
+  // push-pull active-high by default), rising-edge interrupt.
+  const auto pin = static_cast<gpio_num_t>(int_pin);
+  gpio_config_t cfg = {};
+  cfg.pin_bit_mask = 1ULL << pin;
+  cfg.mode = GPIO_MODE_INPUT;
+  cfg.pull_up_en = GPIO_PULLUP_DISABLE;
+  cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  cfg.intr_type = GPIO_INTR_POSEDGE;
+  gpio_config(&cfg);
+  gpio_install_isr_service(0); // idempotent — same call exists for buttons
+  gpio_isr_handler_add(
+      pin,
+      [](void *arg) { *static_cast<volatile bool *>(arg) = true; },
+      const_cast<bool *>(&motion_flag));
+#endif
+
+  // Clear any pending latched event so the first edge after this point is a
+  // real one (chip may have asserted INT1 immediately after enable_motion).
+  (void)read_int1_src();
+  motion_flag = false;
+
+  auto *ctx = new MotionTaskCtx{this};
+  if (!RTOS::task_create(motion_log_task_entry, "accel_motion",
+                         /*stack=*/2048, ctx, /*prio=*/2,
+                         /*handle=*/nullptr)) {
+    AG_LOGE(TAG, "start_motion_log_task: task_create failed");
+    delete ctx;
+    return;
+  }
+  AG_LOGI(TAG, "motion-log task started on GPIO%d", int_pin);
 }
 
 bool LIS2DH12::_write_reg(uint8_t reg, uint8_t value) {

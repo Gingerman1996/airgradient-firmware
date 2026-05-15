@@ -265,6 +265,10 @@ void GoHardwareBoard::init_core() {
     } else {
       AG_LOGW(TAG, "LIS2DH12 read failed");
     }
+    // Switch to interrupt-driven motion logging: only emits a log line
+    // when the LIS2DH12 INT1 fires (high-pass-filtered motion > 250 mg on
+    // any axis). INT1 → ESP32-C5 GPIO3 via net ACC_INT.
+    accel->start_motion_log_task(PIN_ACCEL_INT);
   } else {
     AG_LOGW(TAG, "LIS2DH12 init failed — accelerometer offline");
   }

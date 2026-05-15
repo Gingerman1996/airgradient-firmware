@@ -82,6 +82,7 @@ inline constexpr uint8_t I2C_ADDR_CAP1203 = 0x28; // Capacitive touch
 inline constexpr uint8_t I2C_ADDR_LP5036 = 0x33;  // RGB LED driver (mobile_display, ADDR0=ADDR1=1)
 inline constexpr uint8_t I2C_ADDR_TCA9536 = 0x41; // TI 4-ch I/O expander (fixed); P0 -> TAU1113 PRTRG
 inline constexpr uint8_t I2C_ADDR_LIS2DH12 = 0x18; // ST 3-axis accelerometer (SA0=GND on v0.3)
+inline constexpr gpio_num_t PIN_ACCEL_INT = GPIO_NUM_3; // LIS2DH12 INT1 (net ACC_INT) → ESP32-C5 IO3
 // SPS30 PM sensor uses a fixed address (0x69) defined in the driver.
 
 // ---------------------------------------------------------------------------
