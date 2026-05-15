@@ -90,10 +90,11 @@ static constexpr uint8_t SETTING_CLEAR_DATA = 13;
 static constexpr uint8_t SETTING_BATTERY_LEARNING = 14;
 static constexpr uint8_t SETTING_CHARGE_CUTOFF = 15;
 static constexpr uint8_t SETTING_CHARGE_CURRENT = 16;
-static constexpr uint8_t SETTING_EXIT_ADMIN = 17;
-static constexpr uint8_t ADMIN_HIDDEN_ROWS = 4;
+static constexpr uint8_t SETTING_GPS_SLEEP_TEST = 17;
+static constexpr uint8_t SETTING_EXIT_ADMIN = 18;
+static constexpr uint8_t ADMIN_HIDDEN_ROWS = 5;
 
-static constexpr uint8_t SETTINGS_TOTAL = 18;       // indices 0..17
+static constexpr uint8_t SETTINGS_TOTAL = 19;       // indices 0..18
 static constexpr uint8_t TAG_LIST_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t MAIN_MENU_TOTAL = 4;       // indices 0..3
 static constexpr uint8_t CONFIRM_TOTAL = 5;         // indices 0..4
@@ -826,6 +827,10 @@ UIActionResult UIManager::dispatch_settings(InputSource source, InputType type) 
       // and shows a snackbar.  Returns to the Settings screen.
       _admin_mode = false; // local mirror — orchestrator will save settings
       result.action = UIAction::ExitAdminMode;
+    } else if (_settings_index == SETTING_GPS_SLEEP_TEST && _admin_mode) {
+      // Admin-mode-only one-shot action.  Orchestrator dispatches to
+      // GpsService::sleep_for_ms() and shows a snackbar.
+      result.action = UIAction::TestGpsSleep;
     } else if ((_settings_index >= SETTING_UNITS &&
                 _settings_index <= SETTING_PLAY_SOUND) ||
                (_settings_index == SETTING_BATTERY_LEARNING && _admin_mode) ||
@@ -1103,6 +1108,14 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
       }
       (void)snprintf(label, sizeof(label), "Charge Current: %s",
                      CHARGE_CURRENT_OPTIONS[_setting_charge_current]);
+      break;
+    case SETTING_GPS_SLEEP_TEST:
+      // Admin-only — hidden in production. One-shot action: pressing Select
+      // fires a 15 s CFG-SLEEP cycle (auto-recovers via the run-loop deadline).
+      if (!_admin_mode) {
+        continue;
+      }
+      (void)snprintf(label, sizeof(label), "GPS Sleep Test");
       break;
     case SETTING_EXIT_ADMIN:
       // Hidden in production — render only when admin mode is active.

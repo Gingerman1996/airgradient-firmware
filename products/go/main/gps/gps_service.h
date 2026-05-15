@@ -70,6 +70,18 @@ public:
   /// next task-loop iteration.
   void set_aiding_data(const GpsAidingData &data);
 
+  /// Request the receiver to enter deep sleep for @p duration_ms via
+  /// CFG-SLEEP. Thread-safe: queues the command and the task loop sends it
+  /// on the next iteration (avoids concurrent UART access). The module
+  /// auto-wakes after the timer expires or when wake_from_sleep() is called.
+  void sleep_for_ms(uint32_t duration_ms);
+
+  /// Wake the receiver early (before the CFG-SLEEP timer expires) by pulsing
+  /// the wake line registered on the underlying driver. Safe to call from
+  /// any context; pulses are short (~20 ms) but block the calling thread.
+  /// No-op if no wake handler is registered.
+  void wake_from_sleep();
+
 private:
   GpsDriver &_driver;
   RtosQueueHandle _event_queue;
@@ -83,6 +95,10 @@ private:
   bool _clock_synced = false;
   GpsAidingData _aiding_data;   // protected by _mutex
   bool _aiding_pending = false; // protected by _mutex
+  uint32_t _sleep_ms_pending = 0; // protected by _mutex (0 = no request)
+  bool _resync_pending = false;   // protected by _mutex — host-wake signal
+  uint64_t _sleep_until_ms = 0;   // wall time of scheduled auto-resync (timer
+                                  // path). Read/written only inside run().
 
   static void task_entry(void *arg); // RTOS task entry point
   void run();                        // actual task loop

@@ -723,6 +723,18 @@ void Orchestrator::on_input(const InputEventData &input) {
     _svc.ui_manager.show_snackbar("Admin mode off");
     AG_LOGI(TAG, "admin mode exited via Settings menu");
     break;
+  case UIAction::TestGpsSleep: {
+    // Admin-mode diagnostic: send CFG-SLEEP for 15 s; the GpsService run
+    // loop arms an auto-resync at deadline+1.5 s so the UART link is
+    // restored automatically when the receiver self-wakes at 9600 baud.
+    // No host-pulse early wake — keep this trigger atomic.
+    constexpr uint32_t TEST_SLEEP_MS = 15000;
+    _svc.gps_service.sleep_for_ms(TEST_SLEEP_MS);
+    _svc.ui_manager.show_snackbar("GPS sleep 15s...");
+    AG_LOGI(TAG, "admin: GPS sleep test triggered (%u ms)",
+            static_cast<unsigned>(TEST_SLEEP_MS));
+    break;
+  }
   case UIAction::PlaySound: {
     apply_settings_change();
     const uint32_t duration_ms = play_sound_select(

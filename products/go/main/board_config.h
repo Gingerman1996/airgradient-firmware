@@ -80,6 +80,7 @@ inline constexpr uint8_t I2C_ADDR_BMS = 0x6A;     // BQ25629 battery charger
 inline constexpr uint8_t I2C_ADDR_FUEL_GAUGE = 0x55; // BQ27427 fuel gauge (fixed)
 inline constexpr uint8_t I2C_ADDR_CAP1203 = 0x28; // Capacitive touch
 inline constexpr uint8_t I2C_ADDR_LP5036 = 0x33;  // RGB LED driver (mobile_display, ADDR0=ADDR1=1)
+inline constexpr uint8_t I2C_ADDR_TCA9536 = 0x41; // TI 4-ch I/O expander (fixed); P0 -> TAU1113 PRTRG
 // SPS30 PM sensor uses a fixed address (0x69) defined in the driver.
 
 // ---------------------------------------------------------------------------

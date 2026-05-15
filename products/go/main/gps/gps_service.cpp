@@ -114,6 +114,28 @@ void GpsService::set_aiding_data(const GpsAidingData &data) {
   _mutex.unlock();
 }
 
+void GpsService::sleep_for_ms(uint32_t duration_ms) {
+  if (duration_ms == 0) {
+    return; // 0 is "no request" sentinel in _sleep_ms_pending
+  }
+  _mutex.lock();
+  _sleep_ms_pending = duration_ms;
+  _mutex.unlock();
+  AG_LOGI(TAG, "sleep_for_ms: queued %u ms", static_cast<unsigned>(duration_ms));
+}
+
+void GpsService::wake_from_sleep() {
+  // The wake handler runs synchronously and only touches the I/O expander —
+  // no UART access, so it is safe to call outside the task loop. UART resync
+  // is deferred to the task loop via _resync_pending to avoid concurrent
+  // access with read() on the next tick.
+  AG_LOGI(TAG, "wake_from_sleep: requested");
+  _driver.wake_from_sleep();
+  _mutex.lock();
+  _resync_pending = true;
+  _mutex.unlock();
+}
+
 // ---------------------------------------------------------------------------
 // Task entry point (static)
 // ---------------------------------------------------------------------------
@@ -133,11 +155,15 @@ void GpsService::run() {
   // task lifetime.  stop() blocks on this semaphore before returning.
   _done_sem.create();
 
+  const uint64_t start_ms = RTOS::get_time_ms();
   _driver.begin(_config.baud_rate);
   _driver.gnss_start();
   AG_LOGI(TAG, "GNSS receiver started");
 
   uint64_t last_post_ms = 0;
+  uint64_t last_summary_ms = 0;
+  bool ttff_logged = false;
+  GpsFixType last_fix_type = GpsFixType::NoFix;
 
   while (_running) {
     // Check for pending aiding data (set via set_aiding_data() from any
@@ -166,9 +192,49 @@ void GpsService::run() {
       }
     }
 
+    // Pending CFG-SLEEP request — drain under mutex, send on UART outside it.
+    // Co-located with aiding injection so the task loop is the sole UART writer.
+    {
+      uint32_t sleep_local = 0;
+      _mutex.lock();
+      if (_sleep_ms_pending != 0) {
+        sleep_local = _sleep_ms_pending;
+        _sleep_ms_pending = 0;
+      }
+      _mutex.unlock();
+      if (sleep_local != 0) {
+        _driver.sleep_for_ms(sleep_local);
+        // After CFG-SLEEP, the TAU1113's UART resets to 9600 baud on wake.
+        // Schedule a resync just past the timer expiry (1.5 s margin for
+        // module bring-up) so the link is restored even if no one calls
+        // wake_from_sleep() — i.e., the timer-only path.
+        _sleep_until_ms = RTOS::get_time_ms() + sleep_local + 1500;
+      }
+    }
+
     if (_driver.read()) {
       const GpsData data = _driver.get_data();
       update_latest_fix(data);
+
+      // Fix-state transition log: surfaces every NoFix↔2D↔3D change so a
+      // brief reception drop-out is obvious in the trace.
+      if (data.fix.fix_type != last_fix_type) {
+        AG_LOGI(TAG, "fix state: %d -> %d (sat=%d hdop=%.1f)",
+                static_cast<int>(last_fix_type), static_cast<int>(data.fix.fix_type),
+                data.fix.satellite_count, static_cast<double>(data.fix.hdop));
+        last_fix_type = data.fix.fix_type;
+      }
+
+      // TTFF (time-to-first-fix) — one-shot marker on first valid fix after
+      // this task started. Useful for comparing cold-start vs aided-start.
+      if (!ttff_logged && is_fix_valid(data.fix)) {
+        const uint64_t ttff_ms = RTOS::get_time_ms() - start_ms;
+        AG_LOGI(TAG, "TTFF: %llu ms (fix=%d sat=%d hdop=%.1f)",
+                static_cast<unsigned long long>(ttff_ms),
+                static_cast<int>(data.fix.fix_type), data.fix.satellite_count,
+                static_cast<double>(data.fix.hdop));
+        ttff_logged = true;
+      }
 
       if (!_clock_synced && is_gps_timestamp_valid(data.timestamp)) {
         sync_system_clock(data.timestamp);
@@ -183,6 +249,46 @@ void GpsService::run() {
       }
       last_post_ms = now_ms;
     }
+
+    // Drain host-wake resync request (signaled by public wake_from_sleep()).
+    bool host_wake_resync = false;
+    _mutex.lock();
+    if (_resync_pending) {
+      host_wake_resync = true;
+      _resync_pending = false;
+    }
+    _mutex.unlock();
+    if (host_wake_resync) {
+      AG_LOGI(TAG, "host-wake: resyncing UART");
+      _driver.resync_after_wake();
+      // Intentionally do NOT clear _sleep_until_ms here: if the host-wake
+      // pulse failed to actually wake the module (e.g. wake-source byte
+      // mismatch), the deadline-based resync at timer expiry still fires
+      // and recovers the link. Two resyncs are harmless (idempotent).
+    }
+
+    // Auto-resync after a sleep timer expires. Fires once when the deadline
+    // (set in the sleep-request drain above) has passed and we haven't been
+    // host-woken in the meantime. Resets to 0 after one resync per sleep.
+    if (_sleep_until_ms != 0 && now_ms >= _sleep_until_ms) {
+      AG_LOGI(TAG, "sleep deadline reached, auto-resyncing UART");
+      _driver.resync_after_wake();
+      _sleep_until_ms = 0;
+    }
+
+    // Periodic summary every 10 s — only visible when this tag is at debug
+    // level. Cheap pulse to confirm the task is alive and tracking quality.
+    if (now_ms - last_summary_ms >= 10000) {
+      const GpsData snapshot = _driver.get_data();
+      AG_LOGD(TAG, "summary: fix=%d sat=%d hdop=%.1f synced=%d",
+              static_cast<int>(snapshot.fix.fix_type), snapshot.fix.satellite_count,
+              static_cast<double>(snapshot.fix.hdop), _clock_synced ? 1 : 0);
+      last_summary_ms = now_ms;
+    }
+
+    // Sleep / wake is triggered by the admin "GPS Sleep Test" menu item; the
+    // run loop drains _sleep_ms_pending above and the deadline-based
+    // auto-resync below recovers UART comms after the module's own wake.
 
     RTOS::delay_ms(TASK_YIELD_MS);
   }

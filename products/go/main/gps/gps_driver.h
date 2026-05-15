@@ -68,6 +68,30 @@ public:
   /// Send TAU1113 CFG-GNSS stop. Requires the serial link to be open.
   void gnss_stop();
 
+  /// Send CFG-SLEEP — put the receiver into deep sleep for @p duration_ms.
+  /// Module auto-wakes when the timer expires or when PRTRG is pulled low
+  /// (see wake_from_sleep()). Datasheet does not document an ACK for this
+  /// frame; treated as fire-and-forget. Requires the serial link to be open.
+  void sleep_for_ms(uint32_t duration_ms);
+
+  /// Wake handler — free function + opaque context. When the driver wants
+  /// to interrupt CFG-SLEEP early, it calls @p fn with @p ctx. Typically
+  /// wired to a TCA9536 channel that pulses PRTRG low. nullptr means
+  /// "no host wake available" — sleep can only end on the duration timer.
+  using WakeFn = void (*)(void *ctx);
+  void set_wake_handler(WakeFn fn, void *ctx);
+
+  /// Invoke the registered wake handler, if any. No-op when unset.
+  void wake_from_sleep();
+
+  /// Re-negotiate the UART link after a CFG-SLEEP wake (host-pulse or timer).
+  /// The TAU1113 brings its UART back up at the factory default 9600 baud
+  /// regardless of what we negotiated pre-sleep, so without this call the
+  /// host-side baud rate no longer matches and parses fail. Performs a full
+  /// teardown + begin() at the rate cached by the last successful begin().
+  /// Safe to call multiple times; no-op if begin() was never called.
+  void resync_after_wake();
+
   /// Get the latest GPS data snapshot.
   GpsData get_data() const;
 
@@ -76,6 +100,13 @@ public:
 
 private:
   AirgradientSerial &_serial;
+  WakeFn _wake_fn = nullptr;
+  void *_wake_ctx = nullptr;
+
+  // Baud rate captured on the last successful begin(). Used by
+  // resync_after_wake() to restore the link after CFG-SLEEP. Zero = no
+  // successful begin() yet.
+  int _baud_rate = 0;
 
   // NMEA sentence accumulation buffer (NMEA 0183 max sentence is 82 chars;
   // 256 bytes provides ample headroom and allows detecting oversized input).

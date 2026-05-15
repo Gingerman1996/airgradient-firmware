@@ -1448,3 +1448,269 @@ TEST_CASE("StubSerial auto-poll builds valid CASIC checksum", "[gps][driver][pol
   REQUIRE(response[10] == ck1);
   REQUIRE(response[11] == ck2);
 }
+
+// ===========================================================================
+// CFG-SLEEP tests — verify exact byte layout and the wake-handler plumbing.
+// ===========================================================================
+
+// Helper: compute the 8-bit Fletcher checksum that CASIC uses, over the
+// payload region (group + sub + length-LE + payload) — same algorithm the
+// driver uses, replicated here so tests don't depend on internal symbols.
+static std::pair<uint8_t, uint8_t> casic_fletcher(const uint8_t *body, size_t len) {
+  uint8_t ck1 = 0, ck2 = 0;
+  for (size_t i = 0; i < len; ++i) {
+    ck1 = (ck1 + body[i]) & 0xFF;
+    ck2 = (ck2 + ck1) & 0xFF;
+  }
+  return {ck1, ck2};
+}
+
+// ---------------------------------------------------------------------------
+// Test 60 — sleep_for_ms(5000) matches the datasheet's CFG-SLEEP example byte
+// for byte. This is the gold-standard frame from TAU1113 datasheet §8.3.1
+// page 27: "Set GNSS task to deep sleep for 5000 ms;
+// F1 D9 06 41 05 00 88 13 00 00 01 E8 56".
+// ---------------------------------------------------------------------------
+TEST_CASE("sleep_for_ms(5000) matches datasheet example byte-for-byte",
+          "[gps][driver][sleep]") {
+  StubRTOS rtos;
+  RTOS::set_instance(&rtos);
+
+  StubSerial serial;
+  GpsDriver gps(serial);
+  gps.begin(GpsDriver::MODULE_DEFAULT_BAUD);
+  serial.clear_tx();
+
+  gps.sleep_for_ms(5000);
+
+  const auto &tx = serial.get_tx_bytes();
+  // clang-format off
+  const std::vector<uint8_t> expected = {
+      0xF1, 0xD9,                        // header
+      0x06, 0x41,                        // CFG-SLEEP (group, sub)
+      0x05, 0x00,                        // payload length = 5 (LE)
+      0x88, 0x13, 0x00, 0x00,            // duration = 5000 ms (LE u32)
+      0x01,                              // wake source = PRTRG
+      0xE8, 0x56,                        // Fletcher checksum
+  };
+  // clang-format on
+  REQUIRE(tx == expected);
+
+  RTOS::set_instance(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Test 61 — sleep_for_ms encodes duration as little-endian uint32 and
+// produces a valid Fletcher checksum for arbitrary values.
+// ---------------------------------------------------------------------------
+TEST_CASE("sleep_for_ms encodes duration as little-endian u32 with valid checksum",
+          "[gps][driver][sleep]") {
+  StubRTOS rtos;
+  RTOS::set_instance(&rtos);
+
+  // Test a few representative durations: small, large, zero, max.
+  const uint32_t durations[] = {0u, 1u, 1000u, 60000u, 3'600'000u, 0xFFFFFFFFu};
+  for (const uint32_t dur : durations) {
+    StubSerial serial;
+    GpsDriver gps(serial);
+    gps.begin(GpsDriver::MODULE_DEFAULT_BAUD);
+    serial.clear_tx();
+
+    gps.sleep_for_ms(dur);
+
+    const auto &tx = serial.get_tx_bytes();
+    REQUIRE(tx.size() == 13);
+
+    // Header
+    REQUIRE(tx[0] == 0xF1);
+    REQUIRE(tx[1] == 0xD9);
+    // Group + Sub
+    REQUIRE(tx[2] == 0x06);
+    REQUIRE(tx[3] == 0x41);
+    // Length = 5 (LE)
+    REQUIRE(tx[4] == 0x05);
+    REQUIRE(tx[5] == 0x00);
+    // Duration bytes (LE)
+    REQUIRE(tx[6] == static_cast<uint8_t>(dur & 0xFF));
+    REQUIRE(tx[7] == static_cast<uint8_t>((dur >> 8) & 0xFF));
+    REQUIRE(tx[8] == static_cast<uint8_t>((dur >> 16) & 0xFF));
+    REQUIRE(tx[9] == static_cast<uint8_t>((dur >> 24) & 0xFF));
+    // Wake source byte
+    REQUIRE(tx[10] == 0x01);
+
+    // Fletcher checksum over bytes 2..10 (group + sub + len + payload)
+    const auto [ck1, ck2] = casic_fletcher(tx.data() + 2, 9);
+    REQUIRE(tx[11] == ck1);
+    REQUIRE(tx[12] == ck2);
+  }
+
+  RTOS::set_instance(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Test 62 — CFG-SLEEP is fire-and-forget (no ACK polling). The driver
+// must not block waiting for an ACK that the datasheet doesn't promise.
+// Verified by confirming exactly one CASIC packet is emitted even when
+// StubSerial never queues an ACK.
+// ---------------------------------------------------------------------------
+TEST_CASE("sleep_for_ms is fire-and-forget (single transmission, no ACK wait)",
+          "[gps][driver][sleep]") {
+  StubRTOS rtos;
+  RTOS::set_instance(&rtos);
+
+  StubSerial serial;
+  // Intentionally do NOT call set_auto_ack(true): no ACK will be produced.
+  GpsDriver gps(serial);
+  gps.begin(GpsDriver::MODULE_DEFAULT_BAUD);
+  serial.clear_tx();
+
+  gps.sleep_for_ms(1000);
+
+  // CFG-SLEEP class=0x06 sub=0x41 should appear exactly once — no retry.
+  const auto &tx = serial.get_tx_bytes();
+  REQUIRE(count_casic_packets(tx, 0x06, 0x41) == 1);
+
+  RTOS::set_instance(nullptr);
+}
+
+// ===========================================================================
+// Wake-handler tests — set_wake_handler / wake_from_sleep
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 63 — wake_from_sleep is a safe no-op when no handler is registered.
+// ---------------------------------------------------------------------------
+TEST_CASE("wake_from_sleep is a no-op when no handler registered",
+          "[gps][driver][sleep][wake]") {
+  StubRTOS rtos;
+  RTOS::set_instance(&rtos);
+
+  StubSerial serial;
+  GpsDriver gps(serial);
+  // Must not crash, must not write anything to the UART.
+  gps.wake_from_sleep();
+  REQUIRE(serial.get_tx_bytes().empty());
+
+  RTOS::set_instance(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Test 64 — registered wake handler is invoked with its context on
+// wake_from_sleep(), and can be invoked multiple times.
+// ---------------------------------------------------------------------------
+TEST_CASE("wake_from_sleep invokes the registered handler with its context",
+          "[gps][driver][sleep][wake]") {
+  StubRTOS rtos;
+  RTOS::set_instance(&rtos);
+
+  StubSerial serial;
+  GpsDriver gps(serial);
+
+  struct WakeRecorder {
+    int calls = 0;
+    void *last_ctx_arg = nullptr;
+  };
+  WakeRecorder rec;
+  gps.set_wake_handler(
+      [](void *ctx) {
+        auto *r = static_cast<WakeRecorder *>(ctx);
+        r->calls++;
+        r->last_ctx_arg = ctx;
+      },
+      &rec);
+
+  gps.wake_from_sleep();
+  REQUIRE(rec.calls == 1);
+  REQUIRE(rec.last_ctx_arg == &rec);
+
+  gps.wake_from_sleep();
+  gps.wake_from_sleep();
+  REQUIRE(rec.calls == 3);
+
+  // No UART traffic — wake is via the side channel, not CASIC.
+  REQUIRE(serial.get_tx_bytes().empty());
+
+  RTOS::set_instance(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Test 64b — resync_after_wake re-runs the baud-switch + config sequence
+// after begin() was previously called. This is the path that recovers UART
+// state when the TAU1113 wakes from CFG-SLEEP at 9600 baud.
+// ---------------------------------------------------------------------------
+TEST_CASE("resync_after_wake re-runs baud-switch and config commands",
+          "[gps][driver][sleep][wake]") {
+  StubRTOS rtos;
+  RTOS::set_instance(&rtos);
+
+  StubSerial serial;
+  serial.set_auto_ack(true);
+  GpsDriver gps(serial);
+  REQUIRE(gps.begin(115200) == true);
+
+  // Capture baseline TX bytes (begin() already sent baud-switch + MON-VER +
+  // CFG-EPHSAVE + CFG-NAVSAT). Counting CASIC packets by class/sub is the
+  // most robust way to verify both sequences are equivalent.
+  const size_t base_baud_switch =
+      count_casic_packets(serial.get_tx_bytes(), 0x06, 0x00); // CFG-PRT (baud)
+  const size_t base_mon_ver =
+      count_casic_packets(serial.get_tx_bytes(), 0x0A, 0x04);
+  const size_t base_cfg_ephsave =
+      count_casic_packets(serial.get_tx_bytes(), 0x06, 0x10);
+  const size_t base_cfg_navsat =
+      count_casic_packets(serial.get_tx_bytes(), 0x06, 0x0C);
+  serial.clear_tx();
+
+  gps.resync_after_wake();
+
+  // After resync, the same baud-switch + config sequence should have been
+  // re-sent exactly once.
+  const auto &tx = serial.get_tx_bytes();
+  REQUIRE(count_casic_packets(tx, 0x06, 0x00) == base_baud_switch);
+  REQUIRE(count_casic_packets(tx, 0x0A, 0x04) == base_mon_ver);
+  REQUIRE(count_casic_packets(tx, 0x06, 0x10) == base_cfg_ephsave);
+  REQUIRE(count_casic_packets(tx, 0x06, 0x0C) == base_cfg_navsat);
+
+  RTOS::set_instance(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Test 64c — resync_after_wake is a no-op if begin() was never called
+// (defensive: avoids re-initialising a UART that was never opened).
+// ---------------------------------------------------------------------------
+TEST_CASE("resync_after_wake is a no-op when begin() was never called",
+          "[gps][driver][sleep][wake]") {
+  StubRTOS rtos;
+  RTOS::set_instance(&rtos);
+
+  StubSerial serial;
+  GpsDriver gps(serial); // no begin()
+
+  gps.resync_after_wake();
+  REQUIRE(serial.get_tx_bytes().empty());
+
+  RTOS::set_instance(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Test 65 — set_wake_handler(nullptr, nullptr) detaches the handler.
+// ---------------------------------------------------------------------------
+TEST_CASE("set_wake_handler(nullptr, nullptr) detaches the handler",
+          "[gps][driver][sleep][wake]") {
+  StubRTOS rtos;
+  RTOS::set_instance(&rtos);
+
+  StubSerial serial;
+  GpsDriver gps(serial);
+
+  int calls = 0;
+  gps.set_wake_handler([](void *ctx) { (*static_cast<int *>(ctx))++; }, &calls);
+  gps.wake_from_sleep();
+  REQUIRE(calls == 1);
+
+  gps.set_wake_handler(nullptr, nullptr);
+  gps.wake_from_sleep();
+  REQUIRE(calls == 1); // unchanged — handler detached
+
+  RTOS::set_instance(nullptr);
+}

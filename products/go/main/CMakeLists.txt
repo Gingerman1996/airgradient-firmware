@@ -11,6 +11,7 @@ idf_component_register(
          "gps/gps_driver.cpp"
          "gps/gps_service.cpp"
          "go_input.cpp"
+         "go_io_expander.cpp"
          "go_led.cpp"
          "go_orchestrator.cpp"
          "go_power.cpp"
@@ -42,3 +43,11 @@ idf_component_register(
 )
 
 ulp_embed_binary(ulp_wdt "ulp/wdt_feed.c" "")
+
+# Enable verbose GPS debug logging by exporting AG_DEBUG_GPS before the build:
+#   AG_DEBUG_GPS=1 idf.py -C products/go build
+# Default builds stay quiet.
+if(DEFINED ENV{AG_DEBUG_GPS})
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE AG_DEBUG_GPS=1)
+    message(STATUS "AGo: AG_DEBUG_GPS=1 — GpsDriver=VERBOSE, GpsService=DEBUG")
+endif()

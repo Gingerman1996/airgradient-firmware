@@ -42,8 +42,15 @@ static constexpr uint8_t CASIC_GROUP_CFG = 0x06;
 static constexpr uint8_t CASIC_SUB_NAVSAT = 0x0C;
 static constexpr uint8_t CASIC_SUB_EPHSAVE = 0x10;
 static constexpr uint8_t CASIC_SUB_GNSS_CONTROL = 0x40;
+static constexpr uint8_t CASIC_SUB_SLEEP = 0x41;
 static constexpr uint8_t GNSS_CONTROL_STOP = 0x10;
 static constexpr uint8_t GNSS_CONTROL_START = 0x11;
+
+/// Wake-source byte for CFG-SLEEP. The datasheet example uses 0x01 alongside
+/// a 5-second duration; from context this enables PRTRG-pull-low as a wake
+/// trigger. Other bits (UART activity, etc.) aren't documented in v1.4 of
+/// the datasheet — keep the conservative datasheet-derived value.
+static constexpr uint8_t SLEEP_WAKE_SOURCE_PRTRG = 0x01;
 
 /// CFG-NAVSAT constellation enable mask.  Requests all L1-band constellations
 /// the TAU1113 family may support: GPS L1 | GLONASS G1 | BeiDou B1 |
@@ -326,6 +333,7 @@ bool GpsDriver::begin(int baud_rate) {
   if (!_serial.begin(baud_rate)) {
     return false;
   }
+  _baud_rate = baud_rate; // cache for resync_after_wake()
   _poll_mon_ver();
   _send_cfg_ephsave();
   _send_cfg_navsat();
@@ -345,11 +353,14 @@ bool GpsDriver::read() {
   const int to_read =
       (avail < static_cast<int>(sizeof(chunk))) ? avail : static_cast<int>(sizeof(chunk));
   const int n = _serial.read(chunk, to_read);
+  unsigned sentences = 0;
   for (int i = 0; i < n; i++) {
     if (_process_byte(static_cast<char>(chunk[i]))) {
       got_sentence = true;
+      sentences++;
     }
   }
+  AG_LOGV(TAG, "read: %d bytes -> %u sentences", n, sentences);
   return got_sentence;
 }
 
@@ -394,10 +405,15 @@ bool GpsDriver::_process_byte(char byte) {
 }
 
 void GpsDriver::_handle_sentence(char *sentence, size_t length) {
+  // Strip the trailing \r\n for readable verbose-level dumps.
+  const int visible_len = static_cast<int>(length >= 2 ? length - 2 : length);
+  AG_LOGV(TAG, "rx: %.*s", visible_len, sentence);
+
   // nmea_parse validates the sentence (including checksum) and returns an
   // allocated struct, or NULL on any error. The buffer is modified in-place.
   nmea_s *parsed = nmea_parse(sentence, length, 1);
   if (parsed == nullptr) {
+    AG_LOGD(TAG, "parse fail: %.*s", visible_len, sentence);
     return;
   }
 
@@ -507,6 +523,51 @@ void GpsDriver::gnss_stop() {
   if (!send_cfg_with_ack(_serial, CASIC_GROUP_CFG, CASIC_SUB_GNSS_CONTROL, payload, sizeof(payload),
                          "gnss_stop")) {
     AG_LOGW(TAG, "gnss_stop: module did not acknowledge after retry");
+  }
+}
+
+void GpsDriver::sleep_for_ms(uint32_t duration_ms) {
+  const uint8_t payload[5] = {
+      static_cast<uint8_t>(duration_ms & 0xFF),
+      static_cast<uint8_t>((duration_ms >> 8) & 0xFF),
+      static_cast<uint8_t>((duration_ms >> 16) & 0xFF),
+      static_cast<uint8_t>((duration_ms >> 24) & 0xFF),
+      SLEEP_WAKE_SOURCE_PRTRG,
+  };
+  send_casic_packet(_serial, CASIC_GROUP_CFG, CASIC_SUB_SLEEP, payload, sizeof(payload));
+  AG_LOGI(TAG, "cfg_sleep: %u ms (wake source 0x%02X)", static_cast<unsigned>(duration_ms),
+          SLEEP_WAKE_SOURCE_PRTRG);
+}
+
+void GpsDriver::set_wake_handler(WakeFn fn, void *ctx) {
+  _wake_fn = fn;
+  _wake_ctx = ctx;
+}
+
+void GpsDriver::wake_from_sleep() {
+  if (_wake_fn == nullptr) {
+    AG_LOGW(TAG, "wake_from_sleep: no wake handler registered");
+    return;
+  }
+  AG_LOGI(TAG, "wake_from_sleep: pulsing wake line");
+  _wake_fn(_wake_ctx);
+}
+
+void GpsDriver::resync_after_wake() {
+  if (_baud_rate == 0) {
+    AG_LOGW(TAG, "resync_after_wake: begin() never called, skipping");
+    return;
+  }
+  AG_LOGI(TAG, "resync_after_wake: re-negotiating UART to %d baud", _baud_rate);
+  // Discard any partial sentence captured before the sleep — the bytes that
+  // arrived during/after wake are not a continuation of any pre-sleep frame.
+  _buffer_pos = 0;
+  _serial.end();
+  // begin() handles the 9600 -> target baud-switch dance and reapplies the
+  // standing CFG-NAVSAT / CFG-EPHSAVE so the post-wake receiver matches our
+  // standing intent.
+  if (!begin(_baud_rate)) {
+    AG_LOGE(TAG, "resync_after_wake: begin(%d) failed", _baud_rate);
   }
 }
 

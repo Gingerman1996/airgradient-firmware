@@ -34,6 +34,7 @@
 #include "drivers/sht40/sht40.h"
 #include "drivers/sps30/sps30.h"
 #include "drivers/stcc4/stcc4.h"
+#include "go_io_expander.h"
 #include "go_led.h"
 #include "gps/gps_driver.h"
 #include "native_gpio.h"
@@ -381,8 +382,30 @@ PowerService &GoHardwareBoard::power() {
 // ===========================================================================
 
 GpsDriver *GoHardwareBoard::new_gps_driver() {
+  assert(_buses_ready && "new_gps_driver() requires init_buses()");
   auto *serial = new AirgradientUART(UART_PORT_GPS, PIN_GPS_RX, PIN_GPS_TX);
-  return new GpsDriver(*serial);
+  auto *driver = new GpsDriver(*serial);
+
+  // Wire the TAU1113 PRTRG wake line: U18 channel P0 must be driven LOW for
+  // ≥10 ms to wake the module out of CFG-SLEEP. Configure P0 as output and
+  // park it HIGH so the GPS sees User Normal Mode at boot (low at power-up
+  // would enter BootROM Command Mode — per TAU1113 datasheet §4.3).
+  TCA9536::Config tca_cfg;
+  tca_cfg.address = I2C_ADDR_TCA9536;
+  auto *expander = new TCA9536(_i2c_bus, tca_cfg);
+  if (expander->init() && expander->write(TCA9536::Pin::P0, true) &&
+      expander->set_output(TCA9536::Pin::P0)) {
+    driver->set_wake_handler(
+        [](void *ctx) {
+          static_cast<TCA9536 *>(ctx)->pulse_low(TCA9536::Pin::P0, 20);
+        },
+        expander);
+    AG_LOGI(TAG, "GPS wake line ready (TCA9536 P0 -> PRTRG)");
+  } else {
+    AG_LOGW(TAG, "TCA9536 init failed — GPS host-wake unavailable, CFG-SLEEP "
+                 "can only end on its own timer");
+  }
+  return driver;
 }
 
 CapTouchSensor *GoHardwareBoard::new_touch_sensor() {

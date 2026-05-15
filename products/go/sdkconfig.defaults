@@ -30,3 +30,11 @@ CONFIG_ULP_COPROC_TYPE_LP_CORE=y
 
 # SGP41 gas index algorithm sampling interval
 CONFIG_SGP41_INDEX_SAMPLING_INTERVAL_10S=y
+
+# Logging — compile all levels in so per-tag esp_log_level_set() at runtime
+# can raise specific tags (e.g. GpsDriver) to VERBOSE during debug sessions.
+# Runtime default stays at INFO via CONFIG_LOG_DEFAULT_LEVEL_INFO=y, so
+# production output is unchanged. Cost is a few KB of debug strings in flash.
+CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=n
+CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
+CONFIG_LOG_MAXIMUM_LEVEL=5

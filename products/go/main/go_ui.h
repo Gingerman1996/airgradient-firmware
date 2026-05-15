@@ -31,6 +31,8 @@ enum class UIAction : uint8_t {
   PlaySound,     ///< User confirmed a Play Sound choice.  Implies
                  ///< SettingsChanged + play the selected melody.
                  ///< Accompanied by UIActionResult::sound_index.
+  TestGpsSleep,  ///< Admin selected "GPS Sleep Test" — fires a one-shot
+                 ///< CFG-SLEEP + deadline-based auto-resync cycle.
 };
 
 struct UIActionResult {
