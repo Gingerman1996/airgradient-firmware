@@ -13,3 +13,4 @@ __pycache__/
 .opencode
 .claude
 .export
+products/go/gps_workflow_explainer/
