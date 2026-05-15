@@ -10,6 +10,7 @@ idf_component_register(
          "go_display.cpp"
          "gps/gps_driver.cpp"
          "gps/gps_service.cpp"
+         "go_accel.cpp"
          "go_input.cpp"
          "go_io_expander.cpp"
          "go_led.cpp"

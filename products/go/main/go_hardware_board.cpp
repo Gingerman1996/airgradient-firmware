@@ -34,6 +34,7 @@
 #include "drivers/sht40/sht40.h"
 #include "drivers/sps30/sps30.h"
 #include "drivers/stcc4/stcc4.h"
+#include "go_accel.h"
 #include "go_io_expander.h"
 #include "go_led.h"
 #include "gps/gps_driver.h"
@@ -247,6 +248,26 @@ void GoHardwareBoard::init_core() {
   init_buses();
   init_spi();
   init_bms();
+
+  // Bring-up probe for the LIS2DH12 accelerometer (U11 on v0.3). The chip has
+  // never been wired in firmware before; this verifies WHO_AM_I and prints a
+  // sample reading so we can confirm bus health + axis orientation by hand
+  // (gravity reads as ~+1000 mg on the upward axis). One-shot — once a use
+  // case is decided (AGFW-704 shake-suppression, motion-aware GPS, …) the
+  // driver gets a permanent home.
+  LIS2DH12::Config accel_cfg;
+  accel_cfg.address = I2C_ADDR_LIS2DH12;
+  auto *accel = new LIS2DH12(_i2c_bus, accel_cfg);
+  if (accel->init()) {
+    LIS2DH12::Reading r;
+    if (accel->read(r)) {
+      AG_LOGI(TAG, "LIS2DH12 sample: x=%d mg, y=%d mg, z=%d mg", r.x_mg, r.y_mg, r.z_mg);
+    } else {
+      AG_LOGW(TAG, "LIS2DH12 read failed");
+    }
+  } else {
+    AG_LOGW(TAG, "LIS2DH12 init failed — accelerometer offline");
+  }
 }
 
 // ===========================================================================
