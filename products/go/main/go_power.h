@@ -264,6 +264,23 @@ public:
   /// Fixed threshold — not a user-configurable setting.
   static constexpr float BATTERY_CRITICAL_PERCENT = 5.0f;
 
+  // --- Battery-temperature protection thresholds (°C, from TS-pin NTC) ---
+  //
+  // The BQ25628 has hardware JEITA on the TS pin, but the chip's % thresholds
+  // are calibrated for a 103AT thermistor (B=3435K) while this board uses a
+  // KNTC0805/10KF (B=3950K) — so the effective trip temperatures shift.
+  // To get a precise cutoff we drive these in software off the driver's
+  // Steinhart-Hart conversion (BmsTelemetry::battery_temperature_c).
+  //
+  // Behavior in poll_bms():
+  //   T >= CHARGE_HOT_CUTOFF_C    -> charging disabled (overrides FC logic)
+  //   T <= CHARGE_HOT_RESUME_C    -> charging permitted again (hysteresis)
+  //   T >= SHIP_MODE_HOT_C        -> enter ship mode (BATFET off, PMID & SYS
+  //                                  go dark after t_BATFET_DLY ~ 12.5 s)
+  static constexpr float CHARGE_HOT_CUTOFF_C = 50.0f;
+  static constexpr float CHARGE_HOT_RESUME_C = 47.0f;
+  static constexpr float SHIP_MODE_HOT_C = 60.0f;
+
 private:
   BmsDevice &_bms;
   const gpio::Hal &_gpio;
@@ -279,6 +296,15 @@ private:
   /// Admin-only opt-in for the FC=1 auto-disable behaviour.  False = the
   /// charger is always left enabled (production default).
   bool _charge_cutoff_at_full = false;
+
+  /// True while charging is held off by the battery over-temperature guard.
+  /// Set when T_batt rises above CHARGE_HOT_CUTOFF_C, cleared when it falls
+  /// back below CHARGE_HOT_RESUME_C.  Takes priority over the FC=1 logic.
+  bool _thermal_charge_disabled = false;
+
+  /// Latched true once the over-temperature ship-mode trip has fired, so we
+  /// don't spam enter_ship_mode() while the BATFET_DLY (12.5 s) winds down.
+  bool _thermal_ship_mode_triggered = false;
 
   /// Last fast-charge current applied to the BMS, in mA.  0 = no value
   /// pushed yet; the first set_charge_current_ma() call always writes

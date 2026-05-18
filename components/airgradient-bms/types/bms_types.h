@@ -20,6 +20,10 @@ static constexpr float PERCENT = -1.0f;
 static constexpr int16_t CURRENT_MA = -32768; // INT16_MIN
 static constexpr uint16_t VOLTAGE_MV = 65535; // UINT16_MAX
 static constexpr int16_t TEMPERATURE_C = -32768;
+/// Sentinel for float battery temperature (well below any plausible real
+/// reading; anything >= TEMPERATURE_FLOAT_C_MIN_VALID is considered valid).
+static constexpr float TEMPERATURE_FLOAT_C = -999.0f;
+static constexpr float TEMPERATURE_FLOAT_C_MIN_VALID = -100.0f;
 } // namespace BmsInvalid
 
 // ---------------------------------------------------------------------------
@@ -97,11 +101,19 @@ struct BmsTelemetry {
   // --- Temperature ---
   float ts_percent = BmsInvalid::PERCENT;                ///< Thermistor ADC reading (%)
   int16_t die_temperature_c = BmsInvalid::TEMPERATURE_C; ///< IC die temperature (°C)
+  /// Battery temperature in °C derived from the TS-pin NTC.  Drivers that
+  /// don't expose a NTC conversion leave this at sentinel.  Use
+  /// is_battery_temperature_valid() before consuming.
+  float battery_temperature_c = BmsInvalid::TEMPERATURE_FLOAT_C;
 
   // --- Validation helpers ---
   bool is_battery_voltage_valid() const { return battery_voltage >= BmsRange::MIN_VALID_VOLT; }
 
   bool is_charging_voltage_valid() const { return charging_voltage >= BmsRange::MIN_VALID_VOLT; }
+
+  bool is_battery_temperature_valid() const {
+    return battery_temperature_c >= BmsInvalid::TEMPERATURE_FLOAT_C_MIN_VALID;
+  }
 
   bool is_valid() const { return is_battery_voltage_valid() && is_charging_voltage_valid(); }
 };

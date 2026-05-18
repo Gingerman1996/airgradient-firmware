@@ -45,6 +45,8 @@ public:
   IMPLEMENT_CONST_MOCK0(feature_ship_available);
   IMPLEMENT_MOCK0(enter_ship_mode);
   IMPLEMENT_MOCK1(configure_pmid_mode);
+  IMPLEMENT_MOCK1(set_charge_enable);
+  IMPLEMENT_MOCK1(set_charge_current_ma);
 };
 
 // ============================================================================
@@ -245,6 +247,8 @@ TEST_CASE("poll_bms: BMS telemetry aggregation", "[PowerService][poll_bms]") {
     CHECK(snap.telemetry.pmid_voltage_mv == BmsInvalid::VOLTAGE_MV);
     CHECK(snap.telemetry.ts_percent == Catch::Approx(BmsInvalid::PERCENT));
     CHECK(snap.telemetry.die_temperature_c == BmsInvalid::TEMPERATURE_C);
+    CHECK(snap.telemetry.battery_temperature_c == Catch::Approx(BmsInvalid::TEMPERATURE_FLOAT_C));
+    CHECK_FALSE(snap.telemetry.is_battery_temperature_valid());
   }
 
   SECTION("read_status fails — charger_status stays at defaults") {
@@ -280,6 +284,151 @@ TEST_CASE("poll_bms: BMS telemetry aggregation", "[PowerService][poll_bms]") {
 
     CHECK(snap.battery_percentage == Catch::Approx(5.0f));
     CHECK_FALSE(snap.critical);
+  }
+}
+
+// ============================================================================
+// TEST CASE 1b — battery over-temperature protection
+//
+// Drives PowerService through the TS-pin NTC thermal guard:
+//   T < 50 °C            -> no cutoff, set_charge_enable not touched
+//   T >= 50 °C           -> set_charge_enable(false) (single edge write)
+//   T cools to 47 °C     -> set_charge_enable(true) (re-arm with hysteresis)
+//   T >= 60 °C           -> enter_ship_mode() fires once, latched
+//   Invalid temperature  -> guard is inert
+// ============================================================================
+
+namespace {
+struct ThermalTelemetrySetter {
+  float battery_voltage = 3.7f;
+  float charging_voltage = 5.0f;
+  float battery_temperature_c = 25.0f;
+};
+
+auto telemetry_with_temp(float t_c) {
+  return [t_c](BmsTelemetry &out) {
+    out.battery_voltage = 3.7f;
+    out.charging_voltage = 5.0f;
+    out.battery_temperature_c = t_c;
+  };
+}
+} // namespace
+
+TEST_CASE("poll_bms: battery over-temperature protection", "[PowerService][thermal]") {
+  MockBmsDevice mock_bms;
+  PowerService svc(mock_bms, test_gpio_hal, DEFAULT_CONFIG);
+
+  // PMID sync, percentage, status: shared across all sections — neither the
+  // thermal guard nor the assertions care about them.
+  ALLOW_CALL(mock_bms, configure_pmid_mode(trompeloeil::_)).RETURN(true);
+  ALLOW_CALL(mock_bms, get_battery_percentage(trompeloeil::_))
+      .SIDE_EFFECT(*_1 = 75.0f)
+      .RETURN(true);
+  ALLOW_CALL(mock_bms, read_status(trompeloeil::_))
+      .SIDE_EFFECT(_1.charging_state = BmsChargingState::FastCharge)
+      .RETURN(true);
+
+  SECTION("normal temperature — no charge-enable writes, no ship mode") {
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = 25.0f)
+        .RETURN(true);
+    // No set_charge_enable / enter_ship_mode expectations — trompeloeil will
+    // fail the test if either is invoked.
+
+    const PowerSnapshot snap = svc.poll_bms();
+    CHECK(snap.telemetry.battery_temperature_c == Catch::Approx(25.0f));
+  }
+
+  SECTION("invalid temperature reading — guard inert") {
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = BmsInvalid::TEMPERATURE_FLOAT_C)
+        .RETURN(true);
+
+    const PowerSnapshot snap = svc.poll_bms();
+    CHECK_FALSE(snap.telemetry.is_battery_temperature_valid());
+  }
+
+  SECTION("crosses 50°C — charging disabled exactly once on edge") {
+    trompeloeil::sequence seq;
+
+    // First poll: 25 °C → no write.
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .IN_SEQUENCE(seq)
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = 25.0f)
+        .RETURN(true);
+    // Second poll: 51 °C → set_charge_enable(false) fires.
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .IN_SEQUENCE(seq)
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = 51.0f)
+        .RETURN(true);
+    REQUIRE_CALL(mock_bms, set_charge_enable(false)).IN_SEQUENCE(seq).RETURN(true);
+    // Third poll: 51 °C again → cache says already disabled, no second write.
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .IN_SEQUENCE(seq)
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = 51.0f)
+        .RETURN(true);
+
+    svc.poll_bms();
+    svc.poll_bms();
+    svc.poll_bms();
+  }
+
+  SECTION("hysteresis — disable at 50, re-enable at 47, not at 48") {
+    trompeloeil::sequence seq;
+
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .IN_SEQUENCE(seq)
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = 55.0f)
+        .RETURN(true);
+    REQUIRE_CALL(mock_bms, set_charge_enable(false)).IN_SEQUENCE(seq).RETURN(true);
+
+    // 48 °C — still inside the hysteresis band (between 47 and 50). No write.
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .IN_SEQUENCE(seq)
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = 48.0f)
+        .RETURN(true);
+
+    // 46 °C — drops below CHARGE_HOT_RESUME_C (47), guard clears.
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .IN_SEQUENCE(seq)
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = 46.0f)
+        .RETURN(true);
+    REQUIRE_CALL(mock_bms, set_charge_enable(true)).IN_SEQUENCE(seq).RETURN(true);
+
+    svc.poll_bms();
+    svc.poll_bms();
+    svc.poll_bms();
+  }
+
+  SECTION("crosses 60°C — ship mode fires once, then latched") {
+    trompeloeil::sequence seq;
+
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .IN_SEQUENCE(seq)
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = 60.5f)
+        .RETURN(true);
+    // Charge cut first (cache starts at _charge_enabled=true), then ship mode.
+    REQUIRE_CALL(mock_bms, set_charge_enable(false)).IN_SEQUENCE(seq).RETURN(true);
+    REQUIRE_CALL(mock_bms, enter_ship_mode()).IN_SEQUENCE(seq).RETURN(true);
+
+    // Second poll while still hot — must NOT re-trigger ship mode.
+    REQUIRE_CALL(mock_bms, read_telemetry(trompeloeil::_))
+        .IN_SEQUENCE(seq)
+        .LR_SIDE_EFFECT(_1.battery_voltage = 3.7f; _1.charging_voltage = 5.0f;
+                        _1.battery_temperature_c = 60.5f)
+        .RETURN(true);
+
+    svc.poll_bms();
+    svc.poll_bms();
   }
 }
 

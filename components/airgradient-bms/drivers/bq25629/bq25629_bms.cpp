@@ -118,6 +118,16 @@ bool BQ25629Bms::read_telemetry(BmsTelemetry &out) {
   out.ts_percent = adc.ts_percent;
   out.die_temperature_c = adc.tdie_c;
 
+  // Battery temperature via Steinhart-Hart on the TS-pin NTC.  The vendor
+  // driver returns ESP_OK and stamps temperature_c = -999.0f when the TS
+  // reading is outside the linear range — propagating that sentinel into
+  // the telemetry field leaves is_battery_temperature_valid() == false so
+  // callers don't act on a bogus reading.
+  drivers::BQ25629_NTC_Data ntc{};
+  if (_charger.read_ntc_temperature(ntc) == ESP_OK) {
+    out.battery_temperature_c = ntc.temperature_c;
+  }
+
   return true;
 }
 

@@ -145,6 +145,48 @@ PowerSnapshot PowerService::poll_bms() {
     }
   }
 
+  // --- Battery over-temperature protection (TS-pin NTC, software-driven) ---
+  // The driver gives us a Steinhart-Hart-converted cell temperature in
+  // telemetry.battery_temperature_c.  Sentinel (-999.0f) means the TS read
+  // was out of range or unavailable — never act on it.  Hysteresis avoids
+  // chattering at the 50 °C boundary; ship-mode latch avoids retriggering
+  // ship mode I²C writes during the BATFET_DLY (~12.5 s) shutdown window.
+  bool thermal_charge_disable_now = _thermal_charge_disabled;
+  if (status.telemetry.is_battery_temperature_valid()) {
+    const float t_batt = status.telemetry.battery_temperature_c;
+
+    if (!_thermal_ship_mode_triggered && t_batt >= SHIP_MODE_HOT_C) {
+      AG_LOGE(TAG,
+              "BATTERY OVER-TEMP %.1f°C >= %.1f°C — triggering ship mode "
+              "(SYS/PMID will drop after t_BATFET_DLY)",
+              t_batt, SHIP_MODE_HOT_C);
+      // Cut charge first so the cell isn't pushed during the shutdown window.
+      if (_charge_enabled) {
+        if (_bms.set_charge_enable(false)) {
+          _charge_enabled = false;
+        }
+      }
+      if (_bms.enter_ship_mode()) {
+        _thermal_ship_mode_triggered = true;
+        _thermal_charge_disabled = true;
+        thermal_charge_disable_now = true;
+      } else {
+        AG_LOGE(TAG, "enter_ship_mode() failed during thermal trip");
+      }
+    } else if (!_thermal_charge_disabled && t_batt >= CHARGE_HOT_CUTOFF_C) {
+      AG_LOGW(TAG, "BATTERY HOT %.1f°C >= %.1f°C — disabling charge",
+              t_batt, CHARGE_HOT_CUTOFF_C);
+      _thermal_charge_disabled = true;
+      thermal_charge_disable_now = true;
+    } else if (_thermal_charge_disabled && !_thermal_ship_mode_triggered &&
+               t_batt <= CHARGE_HOT_RESUME_C) {
+      AG_LOGI(TAG, "BATTERY cooled %.1f°C <= %.1f°C — charge re-armed",
+              t_batt, CHARGE_HOT_RESUME_C);
+      _thermal_charge_disabled = false;
+      thermal_charge_disable_now = false;
+    }
+  }
+
   // --- Auto-disable charging when the cell is full ---
   // FG declares Full Charge (FC flag) when voltage reaches Charge Voltage
   // AND |current| drops below Taper Rate.  When the admin opt-in
@@ -155,13 +197,23 @@ PowerSnapshot PowerService::poll_bms() {
   // off (production default), the charger is always left enabled — the
   // BMS itself stops charging once the cell is full but resumes top-ups.
   // Edge-triggered — one I²C write per state change.
-  if (fg.flags_ok) {
-    const bool want_charge = _charge_cutoff_at_full ? !fg.fc() : true;
+  //
+  // Thermal cutoff always wins: if the cell is hot, want_charge is forced
+  // false regardless of FC state, and FC-based re-enable is suppressed
+  // until the cell cools back below CHARGE_HOT_RESUME_C.
+  if (fg.flags_ok || thermal_charge_disable_now) {
+    bool want_charge;
+    if (thermal_charge_disable_now) {
+      want_charge = false;
+    } else {
+      want_charge = _charge_cutoff_at_full ? !fg.fc() : true;
+    }
     if (want_charge != _charge_enabled) {
       if (_bms.set_charge_enable(want_charge)) {
         _charge_enabled = want_charge;
-        AG_LOGI(TAG, "charging %s (cutoff=%d FC=%d)",
-                want_charge ? "ENABLED" : "DISABLED", _charge_cutoff_at_full, fg.fc());
+        AG_LOGI(TAG, "charging %s (cutoff=%d FC=%d thermal_hot=%d)",
+                want_charge ? "ENABLED" : "DISABLED", _charge_cutoff_at_full,
+                fg.flags_ok ? fg.fc() : 0, thermal_charge_disable_now);
       } else {
         AG_LOGW(TAG, "set_charge_enable(%d) failed", want_charge);
       }

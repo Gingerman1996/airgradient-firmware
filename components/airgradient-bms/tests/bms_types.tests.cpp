@@ -226,6 +226,22 @@ TEST_CASE("BmsTelemetry new fields default to sentinels", "[BmsTypes]") {
   REQUIRE(t.pmid_voltage_mv == BmsInvalid::VOLTAGE_MV);
   REQUIRE(t.ts_percent == Catch::Approx(BmsInvalid::PERCENT));
   REQUIRE(t.die_temperature_c == BmsInvalid::TEMPERATURE_C);
+  REQUIRE(t.battery_temperature_c == Catch::Approx(BmsInvalid::TEMPERATURE_FLOAT_C));
+  REQUIRE_FALSE(t.is_battery_temperature_valid());
+}
+
+TEST_CASE("BmsTelemetry battery_temperature_c validity", "[BmsTypes]") {
+  BmsTelemetry t{};
+  // Real readings of any plausible battery temperature are valid.
+  t.battery_temperature_c = 25.0f;
+  REQUIRE(t.is_battery_temperature_valid());
+  t.battery_temperature_c = -40.0f;
+  REQUIRE(t.is_battery_temperature_valid());
+  t.battery_temperature_c = 85.0f;
+  REQUIRE(t.is_battery_temperature_valid());
+  // Driver's "TS out of range" path leaves the sentinel intact.
+  t.battery_temperature_c = BmsInvalid::TEMPERATURE_FLOAT_C;
+  REQUIRE_FALSE(t.is_battery_temperature_valid());
 }
 
 // ---------------------------------------------------------------------------
