@@ -143,10 +143,10 @@ GoSettings load_go_settings(ConfigStore &store) {
     settings.admin_mode = admin_mode;
   }
 
-  bool battery_learning_enabled = true;
-  if (store.get_bool(KEY_BATTERY_LEARNING, battery_learning_enabled) == ConfigStoreResult::OK) {
-    settings.battery_learning_enabled = battery_learning_enabled;
-  }
+  // battery_learning_enabled is NOT loaded from NVS — see save_go_settings().
+  // The in-struct default (false) wins on every boot; admin must opt in fresh
+  // per bench-test session.  KEY_BATTERY_LEARNING is reserved for wire-compat
+  // with older BLE clients that may still send the key.
 
   bool charge_cutoff_at_full = false;
   if (store.get_bool(KEY_CHARGE_CUTOFF, charge_cutoff_at_full) == ConfigStoreResult::OK) {
@@ -261,10 +261,8 @@ bool save_go_settings(ConfigStore &store, const GoSettings &settings) {
     return false;
   }
 
-  if (store.set_bool(KEY_BATTERY_LEARNING, settings.battery_learning_enabled) !=
-      ConfigStoreResult::OK) {
-    return false;
-  }
+  // battery_learning_enabled is admin-only and intentionally not persisted —
+  // see load_go_settings() for rationale.  No write to KEY_BATTERY_LEARNING.
 
   if (store.set_bool(KEY_CHARGE_CUTOFF, settings.charge_cutoff_at_full) != ConfigStoreResult::OK) {
     return false;

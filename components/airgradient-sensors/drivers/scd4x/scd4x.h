@@ -91,6 +91,11 @@ public:
    */
   bool do_baseline_calibration(int baseline_ppm = 400) override;
 
+  /// Stop the SCD4x's periodic measurement to save ~17 mA average
+  /// (idle ~0.4 mA vs periodic ~17 mA). On exit, restart periodic
+  /// measurement so subsequent reads succeed. Idempotent.
+  void set_low_power(bool on) override;
+
 private:
   i2c_master_bus_handle_t _i2c_bus;
   uint8_t _address;

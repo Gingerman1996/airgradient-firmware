@@ -137,10 +137,13 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
   }
 
   // --- Common tail ---
-  // charge_current_ma is intentionally not persisted: production firmware
-  // always boots with the default 500 mA in GoSettings.  Push it once so
-  // the BMS cache in PowerService is primed and matches our view.
+  // charge_current_ma and battery_learning_enabled are intentionally not
+  // persisted: production firmware always boots with safe defaults
+  // (500 mA / learning off).  Force-reset here so any stale NVS entry from
+  // an earlier firmware version (which did persist battery_learning_enabled)
+  // cannot leak into the new build.  Admin must opt back in per session.
   _settings.charge_current_ma = 500;
+  _settings.battery_learning_enabled = false;
   _svc.ui_manager.sync_settings(_settings);
   _svc.ui_manager.set_admin_mode(_settings.admin_mode);
   _svc.power_service.set_charge_cutoff_at_full(_settings.charge_cutoff_at_full);
@@ -255,8 +258,13 @@ void Orchestrator::check_timers() {
 
   // --- PM pre-wake timer (fires warmup_duration before next measurement) ---
   uint32_t interval = static_cast<uint32_t>(_settings.measure_interval_seconds) * 1000;
+  // In Battery Learning LOW_POWER the SPS30's +5 V rail is held off via PMID
+  // PassThrough — pre-waking it would spike idle current and the next
+  // measurement skips PM anyway.  Drop the whole pre-wake path while
+  // low-power is active.
   bool pm_sleep_eligible =
-      _mode != OperatingMode::Offline && _svc.power_service.should_sleep_pm_sensor(interval);
+      _mode != OperatingMode::Offline && !_in_learning_low_power &&
+      _svc.power_service.should_sleep_pm_sensor(interval);
   if (pm_sleep_eligible && !_pm_prepare_sent) {
     uint32_t measure_deadline = _last_measurement_ms + interval;
     uint32_t prepare_deadline = measure_deadline - CONFIG_SENSOR_WARMUP_DURATION_MS;
@@ -270,7 +278,15 @@ void Orchestrator::check_timers() {
 
   // --- Sensor timer (single) ---
   if ((now - _last_measurement_ms) >= interval) {
-    _svc.sensor_producer.request_measurement(1, SensorGroup::All);
+    // Battery Learning LOW_POWER: PMID +5 V is intentionally dead, so SPS30
+    // reads would just time out on the I²C bus.  Drop PM_A from the request
+    // mask; CO2 / TVOC / TempHum keep running for the live display.
+    const SensorGroup groups = _in_learning_low_power
+                                   ? static_cast<SensorGroup>(
+                                         static_cast<uint8_t>(SensorGroup::Other) |
+                                         static_cast<uint8_t>(SensorGroup::TvocNox))
+                                   : SensorGroup::All;
+    _svc.sensor_producer.request_measurement(1, groups);
     _last_measurement_ms = now;
     _pm_prepare_sent = false;
   }
@@ -403,6 +419,59 @@ void Orchestrator::on_bms_status_timer() {
           {2700, 100}, {0, 80}, {2700, 100}, {0, 80}, {2700, 100}, {0, 80}, {3500, 250},
       };
       _svc.buzzer.play(kUnplugAlert, sizeof(kUnplugAlert) / sizeof(kUnplugAlert[0]));
+    }
+
+    // --- Battery Learning: charge-current override + LOW_POWER transition ---
+    //
+    // ICHG override: while charging in learning mode, force 1500 mA so the
+    // charge phase doesn't dominate the (already 18 h) full learning cycle.
+    // Restored to the user-configured value on every tick once charging
+    // stops, USB is removed, or learning is disabled.  PowerService's
+    // setter is idempotent, so the per-tick push only costs one comparison.
+    //
+    // LOW_POWER mode: edge-triggered on (learning_ux && !plugged_in).
+    // Entry kills the PMID +5 V boost (drops SPS30 power), puts GPS into
+    // an 8 h CFG-SLEEP, and gates PM sampling (handled in check_timers).
+    // Exit fires when USB is plugged back in or learning is disabled,
+    // restoring normal behaviour on the next sync_pmid_mode tick.
+    const uint16_t desired_ichg = (learning_ux_enabled && plugged_in && now_charging)
+                                      ? LEARNING_CHARGE_CURRENT_MA
+                                      : _settings.charge_current_ma;
+    _svc.power_service.set_charge_current_ma(desired_ichg);
+
+    // LOW_POWER is now active throughout the learning cycle (charge + relax),
+    // not just after unplug.  On VBUS the EN_PM line is the only effective
+    // way to kill SPS30 (PMID is auto-PassThrough = +5 V from VBUS); on cell
+    // PMID-PassThrough-force suppresses the cell→5 V boost converter.
+    // Apply all gates on entry so the same code path works for both phases.
+    //
+    // Beyond SPS30 + GPS + PMID, two steady-state cell-rail loads also need
+    // gating to drop below the BQ27427 sleep_current_ma=50 mA threshold:
+    //   - NimBLE advertising  (~5–30 mA): deinit BLE, re-init on exit
+    //   - SCD4x periodic mode (~17 mA):   stop_periodic, restart on exit
+    //                                     (also suspends SGP41 sampler tick)
+    // Without these two gates the residual idle current sat at ~65–70 mA
+    // and the gauge never entered Sleep → no Qmax learning.
+    const bool want_low_power = learning_ux_enabled;
+    if (want_low_power && !_in_learning_low_power) {
+      AG_LOGI(TAG, "battery learning: entering LOW_POWER (SPS30 off, PMID off, PM skip, "
+                   "GPS sleep %u h, BLE deinit, SCD4x idle, SGP41 sampler off)",
+              LEARNING_GPS_SLEEP_MS / 3600000U);
+      _svc.power_service.set_pm_power(false);
+      _svc.power_service.set_force_pmid_passthrough(true);
+      _svc.gps_service.sleep_for_ms(LEARNING_GPS_SLEEP_MS);
+      _svc.sensor_producer.request_low_power(true);
+      _svc.ble_service.deinit();
+      _in_learning_low_power = true;
+    } else if (!want_low_power && _in_learning_low_power) {
+      AG_LOGI(TAG, "battery learning: exiting LOW_POWER (SPS30 on, PMID auto-sync, GPS wake, "
+                   "BLE re-init, SCD4x periodic, SGP41 sampler on)");
+      _svc.power_service.set_pm_power(true);
+      _svc.power_service.set_force_pmid_passthrough(false);
+      _svc.gps_service.wake_from_sleep();
+      _svc.sensor_producer.request_low_power(false);
+      init_ble_if_portable();
+      _in_learning_low_power = false;
     }
   }
 
@@ -712,10 +781,12 @@ void Orchestrator::on_input(const InputEventData &input) {
   case UIAction::ExitAdminMode:
     _settings.admin_mode = false;
     // Reset admin-only overrides that production users must never inherit.
-    // charge_current_ma is in-memory only (not persisted), so a future boot
-    // already defaults to 500 mA — but enforce it here too so the BMS is
-    // reconciled immediately on exit without waiting for the next reboot.
+    // charge_current_ma and battery_learning_enabled are both in-memory only
+    // (not persisted), so a future boot already defaults to safe values —
+    // but enforce here too so the BMS and the learning state machine are
+    // reconciled immediately on exit without waiting for a reboot.
     _settings.charge_current_ma = 500;
+    _settings.battery_learning_enabled = false;
     save_go_settings(_config_store, _settings);
     _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
     _svc.ui_manager.sync_settings(_settings);
@@ -1363,6 +1434,32 @@ BuildContext Orchestrator::build_context() const {
 
   bool is_charging = is_bms_charging(_latest_power.charging_status);
 
+  // Power dashboard is only meaningful — and only visible — when admin has
+  // explicitly opted into Battery Learning.  Production users (admin off)
+  // never see it; the home screen renders the normal sensor grid.
+  const bool show_power_dashboard = _settings.admin_mode && _settings.battery_learning_enabled;
+  PowerDashboardData dash{};
+  if (show_power_dashboard) {
+    const auto &t = _latest_power.telemetry;
+    dash.valid = _latest_power.fg_valid;
+    dash.soc_pct = _latest_power.fg_soc_pct;
+    dash.voltage_mv = _latest_power.fg_voltage_mv;
+    dash.current_ma = _latest_power.fg_current_ma;
+    dash.remaining_mah = _latest_power.fg_remaining_mah;
+    dash.full_charge_mah = _latest_power.fg_full_charge_mah;
+    dash.temperature_c = _latest_power.fg_temperature_c;
+    dash.flag_fc = _latest_power.fg_flag_fc;
+    dash.flag_chg = _latest_power.fg_flag_chg;
+    dash.flag_dsg = _latest_power.fg_flag_dsg;
+    dash.vsys_mv = t.system_voltage_mv;
+    dash.vpmid_mv = t.pmid_voltage_mv;
+    dash.charge_current_ma = _settings.charge_current_ma;
+    dash.bms_charging_state = static_cast<uint8_t>(_latest_power.charging_status);
+    dash.low_power_active = _in_learning_low_power;
+    dash.plugged_in =
+        bms_power_source_has_external_input(_latest_power.charger_status.power_source);
+  }
+
   return BuildContext{
       .sensor_data = _display_measures,
       .battery_pct = battery_pct,
@@ -1380,6 +1477,8 @@ BuildContext Orchestrator::build_context() const {
       .cache = _cache_buf,
       .cache_count = static_cast<uint8_t>(cache_count),
       .now_ms = static_cast<uint32_t>(RTOS::get_time_ms()),
+      .show_power_dashboard = show_power_dashboard,
+      .power_dashboard = dash,
   };
 }
 

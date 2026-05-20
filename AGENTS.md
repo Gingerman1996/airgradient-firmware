@@ -173,6 +173,115 @@ ctest --test-dir tests/build --output-on-failure
 - Document complex logic inline, especially timing-sensitive operations
 - Reference the current repository docs or component-local docs when explaining design decisions
 
+## 7.5 Battery Learning Mode (GO v0.3)
+
+The BQ27427 fuel-gauge Impedance Track algorithm needs a clean
+charge → relax → discharge → relax cycle to derive Qmax and the Ra Table.
+Once a "golden image" `.gg` has been extracted from a successful cycle, it
+gets baked into firmware so production units boot with a learned gauge and
+skip the 18 h cycle. The toggle below is the admin affordance that runs
+that cycle on the bench.
+
+**Admin menu**: `Settings → Battery Learning: Off / On` (visible only in
+admin mode). **NOT persisted to NVS** — the in-struct default `false` wins
+on every boot, so admin must opt in fresh per bench-test session.  Exiting
+admin mode also force-resets the flag to `false` (see
+`go_orchestrator.cpp:ExitAdminMode` block).  Same in-memory-only pattern as
+`charge_current_ma`.  The `KEY_BATTERY_LEARNING = "blr"` constant is
+preserved for wire compatibility with older BLE clients (no read/write).
+
+**When ON, the orchestrator does four things** (all in
+`products/go/main/go_orchestrator.cpp:on_bms_status_timer()`):
+
+1. **ICHG override (every tick, charge phase)**: while plugged in and the
+   BMS is in any charging state, ICHG is force-pushed to
+   `LEARNING_CHARGE_CURRENT_MA` (1500 mA).  PowerService's setter is
+   idempotent — one I²C write per change.  Restored to the user-configured
+   `_settings.charge_current_ma` the moment charging stops or USB is
+   removed.
+2. **Charge-done UX**: when BMS transitions to `NotCharging` while still
+   plugged in, the existing 500 s rest countdown fires (matches the
+   BQ27427 ResRelax Time so OCV1 settles before the user disconnects),
+   followed by LED8 blink + 4-note "unplug me" beep. Unchanged.
+3. **LOW_POWER state — ACTIVE THROUGHOUT THE CYCLE** (edge-triggered the
+   moment `battery_learning_enabled && admin_mode` becomes true,
+   regardless of plug state):
+   - `PowerService::set_pm_power(false)` — drives EN_PM HIGH, killing the
+     SPS30 directly.  The *only* effective gate while VBUS is present
+     (PMID is auto-PassThrough = +5 V from VBUS during charge, so PMID
+     override alone wouldn't help).
+   - `PowerService::set_force_pmid_passthrough(true)` — pins PMID at
+     PassThrough regardless of power source; matters only on cell power,
+     where it suppresses the cell→+5 V boost converter.
+   - `GpsService::sleep_for_ms(LEARNING_GPS_SLEEP_MS)` — 8 h CFG-SLEEP
+     covers the worst-case unattended cycle without spurious wake.
+   - `_in_learning_low_power = true` — `check_timers()` then strips
+     `SensorGroup::PM` from the measurement request mask, so the sensor
+     producer never tries to read the (now powered-off) SPS30.
+   Exit fires when the toggle (or admin mode) goes false: PM power
+   restored, force flag released, GPS woken.  Plug state never triggers
+   exit by itself — the user keeps low-power gates through the full
+   charge → unplug → relax → discharge → relax cycle.
+4. **E-paper home screen swap**: when the toggle is on, `DisplayService`
+   replaces the normal sensor grid (PM2.5 / CO2 / Temp / Humidity / TVOC /
+   NOx) with a power dashboard rendering SOC, V, I, remaining/full-charge
+   capacity, FG temperature, FC/CHG/DSG flags, system + PMID rails, ICHG,
+   and the BMS charging-state string.  Phase banner at the top:
+   `CHARGE` / `RELAX` / `CHRG LOW-PWR` / `RELAX LOW-PWR` derived from
+   `plugged_in` + `_in_learning_low_power`.  Data flows via the
+   `PowerSnapshot::fg_*` fields (added to retain the FG snapshot past
+   `poll_bms()`) → `BuildContext::power_dashboard` → `DisplayValues` →
+   `DisplayService::_draw_power_dashboard()`.  Refresh cadence is whatever
+   the existing display update flow uses (BMS poll triggers an update).
+
+**Why these specifically**: the gauge needs idle current below
+`sleep_current_ma` (50 mA, set in `go_hardware_board.cpp:223`) for ~5 h to
+enter Relax → take OCV → update Qmax. SPS30 (~50 mA running) and GPS
+(~30 mA active) are the two biggest non-essential loads; killing them gets
+GO v0.3 down to ~15-20 mA total. We deliberately do NOT raise
+`sleep_current_ma` in firmware — production units must keep the 50 mA
+threshold so their normal-use Qmax updates remain meaningful.
+
+**Full bench-test cycle for a fresh gauge**:
+
+1. Phase 0 — flash firmware, plug cell into JST, enable admin mode, toggle
+   Battery Learning ON. Verify boot log shows `BQ27427: Cell config
+   already correct (DC=2000 DE=7400 TermV=3000 SleepI=50) — no change`
+   (idempotent path preserves learning across reboots).
+2. Phase 1 — plug USB. Charger runs at 1500 mA, reaches Taper, BMS
+   transitions to NotCharging. Charge-done melody + 500 s rest countdown
+   fires. Wait for LED8 blink + unplug beep.
+3. Phase 2 — unplug USB at the beep. LOW_POWER engages automatically. Let
+   sit for ≥5 h on cell power. Idle current should be < 20 mA.
+4. Phase 3 — apply ~15 Ω 5 W resistor across the cell terminals (JST,
+   **NOT** the USB-C OTG output — connecting across +5 V boost multiplies
+   apparent cell current via the BQ25628's boost converter). Total cell
+   load ~400 mA = C/5 for a 2000 mAh cell. Discharge to EDV0 (V_term =
+   3.0 V).
+5. Phase 4 — remove the load. Let sit another ≥5 h on cell power. Gauge
+   takes OCV2 → updates Ra Table. `Update Status` register (DM subclass
+   82, offset 0) should transition 0x05 → 0x06.
+6. Phase 5 — connect bqstudio over I²C (EV2400 or equivalent), confirm
+   Update Status = 0x06, export Tools → Golden Image → `.gg`. Bake into
+   firmware for production.
+
+**Critical invariant — do not break**:
+
+The BQ27427's `configure_cell()` (in
+`components/airgradient-bms/drivers/bq27427/bq27427.cpp`) is idempotent: if
+current DM values already match the requested `CellConfig`, no CFGUPDATE
+session is entered and the learned Qmax / Ra Table survive across reboots.
+This is the mechanism that protects the `.gg` golden image after it's
+baked in. **Never change** the `CellConfig` literal at
+`products/go/main/go_hardware_board.cpp:219-224` without also re-running
+the full learning cycle and re-exporting a fresh `.gg` — a value mismatch
+forces CFGUPDATE which wipes Qmax to factory defaults.
+
+The `sleep_current_ma = 50` value in that same struct is the
+production-correct threshold for normal-use Qmax updates. The Battery
+Learning workflow above gets temporary idle current under 50 mA via
+peripheral shutdown, not by raising the threshold.
+
 ## 8. Documentation
 
 Use the current repository docs as the primary source of truth:

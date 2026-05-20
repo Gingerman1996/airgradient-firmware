@@ -38,6 +38,21 @@ struct PowerSnapshot {
 
   /// Full ADC telemetry (currents, voltages, temperatures).
   BmsTelemetry telemetry{};
+
+  /// BQ27427 fuel-gauge snapshot.  Populated by poll_bms() when a gauge is
+  /// attached.  `fg_valid == false` means the gauge is absent or all reads
+  /// failed on this poll.  Used by the admin-mode power dashboard render so
+  /// the orchestrator doesn't need to re-read the FG synchronously.
+  bool fg_valid = false;
+  uint8_t fg_soc_pct = 0;
+  uint16_t fg_voltage_mv = 0;
+  int16_t fg_current_ma = 0;
+  uint16_t fg_remaining_mah = 0;
+  uint16_t fg_full_charge_mah = 0;
+  float fg_temperature_c = 0.0f;
+  bool fg_flag_fc = false;
+  bool fg_flag_chg = false;
+  bool fg_flag_dsg = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -116,6 +131,18 @@ public:
   /// charger at the board's default (500 mA).
   /// @return true if the value matched cache or the write succeeded.
   bool set_charge_current_ma(uint16_t current_ma);
+
+  /// Force the PMID rail into PassThrough regardless of charger power source.
+  ///
+  /// When @p force is true, sync_pmid_mode() stops promoting the rail to
+  /// Boost on cell power — PMID stays in PassThrough (which means 0 V when
+  /// VBUS is gone), killing the +5 V SPS30 supply.  Used by Battery Learning
+  /// mode to drive idle current below the BQ27427's sleep_current_ma
+  /// threshold so the gauge can enter Relax and update Qmax.
+  ///
+  /// When @p force is false, normal auto-sync resumes on the next
+  /// sync_pmid_mode() call (typically within one BMS_STATUS_POLL_INTERVAL_MS).
+  void set_force_pmid_passthrough(bool force);
 
   // -------------------------------------------------------------------------
   // BMS operations (called by orchestrator on timer)
@@ -311,6 +338,11 @@ private:
   /// regardless of the cache so the chip's power-on default cannot drift
   /// from the orchestrator's view.
   uint16_t _charge_current_ma = 0;
+
+  /// When true, sync_pmid_mode() overrides the auto-selected mode to
+  /// PassThrough.  Set by the Battery Learning workflow via
+  /// set_force_pmid_passthrough().  See public setter for details.
+  bool _force_pmid_passthrough = false;
 
   /// Configure timer and GPIO wake sources before entering sleep.
   /// Wrapped in #ifndef TEST_HOST — not callable from host test builds.

@@ -77,6 +77,12 @@ void SensorProducer::request_prepare() {
   }
 }
 
+void SensorProducer::request_low_power(bool on) {
+  if (_task_handle != nullptr) {
+    RTOS::task_notify_send(_task_handle, on ? NOTIFY_LOW_POWER_ON : NOTIFY_LOW_POWER_OFF);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Task entry point (static)
 // ---------------------------------------------------------------------------
@@ -119,7 +125,8 @@ void SensorProducer::run() {
   while (_running) {
     uint32_t now = static_cast<uint32_t>(RTOS::get_time_ms());
     uint32_t timeout = UINT32_MAX;
-    if (_sampler_enabled) {
+    const bool sampler_active = _sampler_enabled && !_low_power_active;
+    if (sampler_active) {
       timeout = (next_tick_ms > now) ? (next_tick_ms - now) : 0;
     }
 
@@ -135,6 +142,13 @@ void SensorProducer::run() {
         handle_calibration();
       } else if (notify_value == NOTIFY_PREPARE) {
         handle_prepare();
+      } else if (notify_value == NOTIFY_LOW_POWER_ON) {
+        handle_low_power(true);
+      } else if (notify_value == NOTIFY_LOW_POWER_OFF) {
+        handle_low_power(false);
+        // Re-anchor sampler cadence so we don't immediately fire a tick
+        // for the time we spent in low-power mode.
+        next_tick_ms = static_cast<uint32_t>(RTOS::get_time_ms()) + SAMPLER_TICK_MS;
       } else {
         handle_measurement(notify_value);
       }
@@ -142,8 +156,9 @@ void SensorProducer::run() {
 
     // Sampler tick — runs after the notification handler so a measurement
     // request never starves it indefinitely. Missed intervals are skipped.
+    // Suspended while low-power mode is active.
     now = static_cast<uint32_t>(RTOS::get_time_ms());
-    if (_sampler_enabled && now >= next_tick_ms) {
+    if (sampler_active && now >= next_tick_ms) {
       handle_sampler_tick();
       next_tick_ms = now + SAMPLER_TICK_MS;
     }
@@ -228,4 +243,13 @@ void SensorProducer::handle_sampler_tick() {
 
   Measures sampler = _manager.start_measures(1, SensorGroup::TvocNox);
   _last_tvoc_nox = sampler.tvoc_nox;
+}
+
+void SensorProducer::handle_low_power(bool on) {
+  if (_low_power_active == on) {
+    return;
+  }
+  AG_LOGI(TAG, "low_power: %s", on ? "ON" : "OFF");
+  _manager.set_co2_low_power(on);
+  _low_power_active = on;
 }

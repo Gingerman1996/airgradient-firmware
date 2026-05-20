@@ -1245,6 +1245,14 @@ void DisplayService::_draw_home(const DisplayValues &v) {
     return;
   }
 
+  // Admin Battery Learning mode replaces the sensor grid with a power
+  // dashboard.  Only the home screen is affected — menus, settings, etc.
+  // render normally on top of whatever the underlying screen is.
+  if (v.show_power_dashboard) {
+    _draw_power_dashboard(v);
+    return;
+  }
+
   const bool chart_visible = metric_has_chart(v.active_metric);
   const bool pm_selected = (v.active_metric == Metric::Pm25);
   const bool co2_selected = (v.active_metric == Metric::Co2);
@@ -1407,6 +1415,84 @@ void DisplayService::_draw_home(const DisplayValues &v) {
     draw_cell(&_u8g2, 4, "Pressure", pressure_buf, false);
     draw_cell(&_u8g2, 5, "Altitude", altitude_buf, false);
   }
+}
+
+void DisplayService::_draw_power_dashboard(const DisplayValues &v) {
+  const PowerDashboardData &p = v.power_dashboard;
+  char buf[40];
+
+  // Phase banner — short label so it fits even with LOW-PWR suffix.
+  // Plugged-in + low-power means CHARGE phase running the low-power gates
+  // (SPS30 + GPS off so charge current isn't burnt by the load).
+  const char *phase;
+  if (!p.plugged_in && p.low_power_active) {
+    phase = "RELAX LOW-PWR";
+  } else if (p.plugged_in && p.low_power_active) {
+    phase = "CHRG LOW-PWR";
+  } else if (p.plugged_in) {
+    phase = "CHARGE";
+  } else {
+    phase = "RELAX";
+  }
+  u8g2_SetFont(&_u8g2, u8g2_font_helvR12_tr);
+  draw_centered_text(&_u8g2, SCREEN_W / 2, 36, phase);
+  u8g2_DrawHLine(&_u8g2, 0, 42, SCREEN_W);
+  u8g2_DrawHLine(&_u8g2, 0, 43, SCREEN_W); // 2px bold to stand in for missing bold font
+
+  if (!p.valid) {
+    u8g2_SetFont(&_u8g2, u8g2_font_helvR12_tr);
+    draw_centered_text(&_u8g2, SCREEN_W / 2, 130, "FG: NO DATA");
+    return;
+  }
+
+  // SOC headline.
+  u8g2_SetFont(&_u8g2, u8g2_font_logisoso32_tr);
+  snprintf(buf, sizeof(buf), "%u%%", static_cast<unsigned>(p.soc_pct));
+  draw_centered_text(&_u8g2, SCREEN_W / 2, 90, buf);
+
+  // Cell voltage.
+  u8g2_SetFont(&_u8g2, u8g2_font_logisoso16_tr);
+  snprintf(buf, sizeof(buf), "%.3fV", static_cast<double>(p.voltage_mv) / 1000.0);
+  draw_centered_text(&_u8g2, SCREEN_W / 2, 114, buf);
+
+  // Cell current — signed, big enough to read at a glance during charge/relax.
+  u8g2_SetFont(&_u8g2, u8g2_font_helvR12_tr);
+  snprintf(buf, sizeof(buf), "I %+d mA", static_cast<int>(p.current_ma));
+  draw_centered_text(&_u8g2, SCREEN_W / 2, 134, buf);
+  u8g2_DrawHLine(&_u8g2, 0, 142, SCREEN_W);
+
+  // Detail rows — small font.  FCC drift is the headline for learning
+  // progress (1917 → 2128 on a fresh learn), so it gets the first detail row.
+  u8g2_SetFont(&_u8g2, u8g2_font_helvR08_tr);
+
+  snprintf(buf, sizeof(buf), "%u/%u mAh", static_cast<unsigned>(p.remaining_mah),
+           static_cast<unsigned>(p.full_charge_mah));
+  draw_centered_text(&_u8g2, SCREEN_W / 2, 156, buf);
+
+  snprintf(buf, sizeof(buf), "T%.1fC  FC%d CHG%d DSG%d", static_cast<double>(p.temperature_c),
+           p.flag_fc ? 1 : 0, p.flag_chg ? 1 : 0, p.flag_dsg ? 1 : 0);
+  draw_centered_text(&_u8g2, SCREEN_W / 2, 170, buf);
+
+  snprintf(buf, sizeof(buf), "Vs %.2f  Vp %.2f", static_cast<double>(p.vsys_mv) / 1000.0,
+           static_cast<double>(p.vpmid_mv) / 1000.0);
+  draw_centered_text(&_u8g2, SCREEN_W / 2, 184, buf);
+
+  snprintf(buf, sizeof(buf), "ICHG %u mA", static_cast<unsigned>(p.charge_current_ma));
+  draw_centered_text(&_u8g2, SCREEN_W / 2, 198, buf);
+
+  // BMS state — mirror of BmsChargingState (defined in
+  // components/airgradient-bms/types/bms_types.h).  Local mapping keeps the
+  // display layer free of the bms_types.h include.  Order must match the
+  // enum declaration order in that header.
+  static const char *const kBmsStates[] = {
+      "Unknown",   "NotCharging",  "TrickleCharge", "PreCharge",
+      "FastCharge", "TaperCharge", "TopOffActive",  "ChrgDone",
+  };
+  constexpr uint8_t kBmsStateCount = sizeof(kBmsStates) / sizeof(kBmsStates[0]);
+  const char *state_str =
+      (p.bms_charging_state < kBmsStateCount) ? kBmsStates[p.bms_charging_state] : "?";
+  snprintf(buf, sizeof(buf), "BMS %s", state_str);
+  draw_centered_text(&_u8g2, SCREEN_W / 2, 212, buf);
 }
 
 void DisplayService::_draw_menu_overlay(const DisplayValues &v) {

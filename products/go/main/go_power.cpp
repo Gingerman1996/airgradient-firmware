@@ -258,6 +258,24 @@ PowerSnapshot PowerService::poll_bms() {
             cs.input_voltage_regulation, cs.safety_timer_expired, cs.watchdog_expired);
   }
 
+  // Preserve the FG snapshot for the admin-mode power dashboard.  Marked
+  // valid only when the gauge was present AND every read in this poll
+  // succeeded — partial failures leave fg_valid = false so the dashboard
+  // shows a "no data" state instead of a mix of fresh and stale numbers.
+  if (fg.present && fg.soc_ok && fg.v_ok && fg.i_ok && fg.rem_ok && fg.fcc_ok &&
+      fg.t_ok && fg.flags_ok) {
+    status.fg_valid = true;
+    status.fg_soc_pct = fg.soc;
+    status.fg_voltage_mv = fg.v_mv;
+    status.fg_current_ma = fg.i_ma;
+    status.fg_remaining_mah = fg.rem_mah;
+    status.fg_full_charge_mah = fg.fcc_mah;
+    status.fg_temperature_c = fg.t_c;
+    status.fg_flag_fc = fg.fc();
+    status.fg_flag_chg = fg.chg();
+    status.fg_flag_dsg = fg.dsg();
+  }
+
   return status;
 }
 
@@ -466,9 +484,14 @@ void PowerService::configure_wake_sources(uint32_t timer_ms) {
 }
 
 bool PowerService::sync_pmid_mode(BmsPowerSource power_source) {
-  const BmsPmidMode desired_mode = bms_power_source_has_external_input(power_source)
-                                       ? BmsPmidMode::PassThrough
-                                       : BmsPmidMode::Boost;
+  // Battery Learning override: when forced, never promote PMID to Boost on
+  // cell power — keeps the +5 V rail dead so SPS30 doesn't draw during the
+  // gauge's Relax window.
+  const BmsPmidMode auto_mode = bms_power_source_has_external_input(power_source)
+                                    ? BmsPmidMode::PassThrough
+                                    : BmsPmidMode::Boost;
+  const BmsPmidMode desired_mode =
+      _force_pmid_passthrough ? BmsPmidMode::PassThrough : auto_mode;
 
   if (_pmid_mode == desired_mode) {
     return true;
@@ -479,10 +502,31 @@ bool PowerService::sync_pmid_mode(BmsPowerSource power_source) {
     return false;
   }
 
-  AG_LOGI(TAG, "sync_pmid_mode: %s for power source %s", bms_pmid_mode_str(desired_mode),
-          bms_power_source_str(power_source));
+  AG_LOGI(TAG, "sync_pmid_mode: %s for power source %s%s", bms_pmid_mode_str(desired_mode),
+          bms_power_source_str(power_source), _force_pmid_passthrough ? " (forced)" : "");
   _pmid_mode = desired_mode;
   return true;
+}
+
+void PowerService::set_force_pmid_passthrough(bool force) {
+  if (force == _force_pmid_passthrough) {
+    return;
+  }
+  _force_pmid_passthrough = force;
+  AG_LOGI(TAG, "force_pmid_passthrough: %s", force ? "ON" : "OFF");
+
+  // Apply immediately when forcing — otherwise the SPS30 rail stays hot
+  // until the next sync_pmid_mode() tick.  When releasing the force, leave
+  // the rail in its current state; the next sync (within
+  // BMS_STATUS_POLL_INTERVAL_MS) will auto-recompute the correct mode.
+  if (force && _pmid_mode != BmsPmidMode::PassThrough) {
+    if (_bms.configure_pmid_mode(BmsPmidMode::PassThrough)) {
+      _pmid_mode = BmsPmidMode::PassThrough;
+      AG_LOGI(TAG, "force_pmid_passthrough: PMID -> PassThrough (immediate)");
+    } else {
+      AG_LOGW(TAG, "force_pmid_passthrough: immediate apply failed");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

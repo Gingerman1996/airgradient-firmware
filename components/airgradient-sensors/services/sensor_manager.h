@@ -152,6 +152,11 @@ public:
   /// TVOC/NOx sensor is wired.
   void set_tvoc_nox_compensation(float temperature_c, float humidity_pct);
 
+  /// Forward set_low_power(on) to the wired CO2 sensor. No-op when no
+  /// CO2 sensor is wired. Used by the product layer to suppress steady-
+  /// state CO2 sensor draw during fuel-gauge learning RELAX phases.
+  void set_co2_low_power(bool on);
+
 private:
   Sensors &_sensors;
 

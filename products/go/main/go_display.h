@@ -39,6 +39,29 @@ struct ListRow {
   bool disabled = false;
 };
 
+/// Aggregated power-dashboard snapshot, rendered on the home screen when
+/// `DisplayValues::show_power_dashboard` is true (admin Battery Learning
+/// mode).  All fields populated by Orchestrator::build_context() from the
+/// most recent PowerSnapshot.
+struct PowerDashboardData {
+  bool valid = false;        ///< false → "FG no data" rendered
+  uint8_t soc_pct = 0;
+  uint16_t voltage_mv = 0;
+  int16_t current_ma = 0;    ///< signed; + = charging, − = discharging
+  uint16_t remaining_mah = 0;
+  uint16_t full_charge_mah = 0;
+  float temperature_c = 0.0f;
+  bool flag_fc = false;
+  bool flag_chg = false;
+  bool flag_dsg = false;
+  uint16_t vsys_mv = 0;      ///< BMS system rail voltage
+  uint16_t vpmid_mv = 0;     ///< BMS PMID rail — should read ~0 in LOW_POWER on cell
+  uint16_t charge_current_ma = 0; ///< ICHG currently programmed at the BMS
+  uint8_t bms_charging_state = 0; ///< BmsChargingState raw enum value
+  bool low_power_active = false;  ///< Orchestrator::_in_learning_low_power mirror
+  bool plugged_in = false;        ///< For phase derivation (CHARGE vs RELAX label)
+};
+
 struct DisplayValues {
   // --- Sensor readings (channel A) ---
   int co2_ppm = MeasuresInvalid::CO2;
@@ -49,6 +72,10 @@ struct DisplayValues {
   int nox_index = MeasuresInvalid::NOX;
   float pressure_hpa = MeasuresInvalid::PRESSURE;
   float altitude_m = MeasuresInvalid::ALTITUDE;
+
+  // --- Admin Battery Learning power dashboard (replaces sensor home view) ---
+  bool show_power_dashboard = false;
+  PowerDashboardData power_dashboard{};
 
   // --- Battery ---
   uint8_t battery_pct = 0xFF; // 0xFF = no data
@@ -234,6 +261,7 @@ private:
 
   void _draw_status_bar(const DisplayValues &v);
   void _draw_home(const DisplayValues &v);
+  void _draw_power_dashboard(const DisplayValues &v);
   void _draw_menu_overlay(const DisplayValues &v);
   void _draw_full_screen_list(const DisplayValues &v);
   void _draw_snackbar(const DisplayValues &v);

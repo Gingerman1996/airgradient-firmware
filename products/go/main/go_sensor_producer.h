@@ -80,6 +80,14 @@ public:
   /// immediately after warmup completes.
   void request_prepare();
 
+  /// Switch the sensor task into (true) or out of (false) low-power mode.
+  /// Non-blocking: returns immediately. The task picks up the request on
+  /// its next loop iteration. In low-power mode the SCD4x's periodic
+  /// measurement is stopped (saves ~17 mA average) and the SGP41
+  /// gas-index sampler tick is suspended (saves ~1 mA average).
+  /// Used by the orchestrator during fuel-gauge learning RELAX phases.
+  void request_low_power(bool on);
+
 private:
   SensorManager &_manager;
   RtosQueueHandle _event_queue;
@@ -112,6 +120,15 @@ private:
   /// Sentinel notification value that triggers PM warmup after power cycle.
   static constexpr uint32_t NOTIFY_PREPARE = UINT32_MAX - 1;
 
+  /// Sentinel notification values that toggle low-power mode (SCD4x stop +
+  /// SGP41 sampler suspend on ON; restart + resume on OFF).
+  static constexpr uint32_t NOTIFY_LOW_POWER_ON = UINT32_MAX - 2;
+  static constexpr uint32_t NOTIFY_LOW_POWER_OFF = UINT32_MAX - 3;
+
+  /// Tracked inside the task only. When true the sampler tick is skipped
+  /// and the SCD4x is idle.
+  bool _low_power_active = false;
+
   /// Sampler cadence derived from Kconfig choice. Only active when the
   /// algorithm is successfully configured.
   static constexpr uint32_t SAMPLER_TICK_MS = SGP41_INDEX_SAMPLING_INTERVAL_MS;
@@ -124,4 +141,5 @@ private:
   void handle_prepare();
   void handle_measurement(uint32_t notify_value);
   void handle_sampler_tick();
+  void handle_low_power(bool on);
 };

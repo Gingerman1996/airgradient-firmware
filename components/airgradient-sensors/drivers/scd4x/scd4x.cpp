@@ -236,3 +236,27 @@ bool SCD4x::do_baseline_calibration(int baseline_ppm) {
 
   return frc_ok;
 }
+
+void SCD4x::set_low_power(bool on) {
+  if (on) {
+    if (!_measuring) {
+      return; // already idle
+    }
+    int16_t err = scd4x_stop_periodic_measurement();
+    if (err != 0) {
+      ESP_LOGW(TAG, "set_low_power: stop_periodic_measurement returned %d (ignored)", err);
+    }
+    _measuring = false;
+    RTOS::delay_ms(STOP_PERIODIC_DELAY_MS);
+    ESP_LOGI(TAG, "set_low_power: ON (periodic measurement stopped)");
+  } else {
+    if (_measuring) {
+      return; // already running
+    }
+    if (!_start_periodic_measurement()) {
+      ESP_LOGE(TAG, "set_low_power: failed to restart periodic measurement");
+      return;
+    }
+    ESP_LOGI(TAG, "set_low_power: OFF (periodic measurement restarted)");
+  }
+}

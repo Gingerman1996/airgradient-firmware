@@ -74,6 +74,11 @@ struct BuildContext {
 
   // Current timestamp for snackbar expiry
   uint32_t now_ms;
+
+  // Admin Battery Learning dashboard plumbing (UIManager copies straight
+  // through to DisplayValues — see go_display.h::PowerDashboardData).
+  bool show_power_dashboard = false;
+  PowerDashboardData power_dashboard{};
 };
 
 // ---------------------------------------------------------------------------

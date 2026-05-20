@@ -49,13 +49,21 @@ struct GoSettings {
   /// from the Settings menu.
   bool admin_mode = false;
 
-  /// Master toggle for the BQ27427 battery-learning UX (charge-done
-  /// melody + 500 s rest countdown + LED8 unplug-me blink + alert beep).
+  /// Master toggle for the BQ27427 battery-learning workflow.  When ON:
+  ///   (a) charge-done UX fires (melody + 500 s rest + LED8 + beep)
+  ///   (b) ICHG is overridden to 1500 mA while charging (faster top-up
+  ///       so the full learning cycle finishes within a working day)
+  ///   (c) on charge-done + USB-removed transition, the device enters
+  ///       LOW_POWER mode: PMID boost is forced off (kills SPS30's +5V
+  ///       rail), PM_A sampling is skipped, GPS is put into CFG-SLEEP.
+  ///       This drops total idle current below the BQ27427's
+  ///       `sleep_current_ma` threshold so the gauge can enter Sleep →
+  ///       Relax → take its OCV measurement → update Qmax.
   /// Only meaningful inside `admin_mode` — production users never see
-  /// the toggle and the UX stays silent regardless of this flag.
-  /// Default true so calibration runs immediately after the first admin
-  /// entry; admin can disable the notifications once Qmax has converged.
-  bool battery_learning_enabled = true;
+  /// the toggle and the workflow is silent regardless of this flag.
+  /// Default OFF so production devices ship with no learning behaviour
+  /// and admin explicitly opts in for a bench-test session.
+  bool battery_learning_enabled = false;
 
   /// When true, clear the BMS EN_CHG bit as soon as the fuel gauge
   /// reports Full Charge (FC=1), and re-enable when FC clears.  Better

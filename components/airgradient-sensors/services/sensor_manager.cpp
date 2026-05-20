@@ -113,6 +113,12 @@ void SensorManager::set_tvoc_nox_compensation(float temperature_c, float humidit
   }
 }
 
+void SensorManager::set_co2_low_power(bool on) {
+  if (_sensors.co2) {
+    _sensors.co2->set_low_power(on);
+  }
+}
+
 Measures SensorManager::start_measures(int iterations, SensorGroup groups) {
   // Initialize accumulation variables
   TempHumData sum_temp_hum_a = {0, 0};

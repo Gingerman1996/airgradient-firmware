@@ -220,6 +220,10 @@ DisplayValues UIManager::build_values(const BuildContext &ctx) const {
   v.use_fahrenheit = ctx.use_fahrenheit;
   v.pm_use_usaqi = ctx.pm_use_usaqi;
 
+  // --- Admin power dashboard pass-through ---
+  v.show_power_dashboard = ctx.show_power_dashboard;
+  v.power_dashboard = ctx.power_dashboard;
+
   // --- Screen navigation ---
   v.screen = _screen;
   v.active_metric = _active_metric;

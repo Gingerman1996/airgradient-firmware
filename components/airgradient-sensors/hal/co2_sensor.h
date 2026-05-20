@@ -36,6 +36,14 @@ public:
   /// Returns true when calibration is complete (or if none was started).
   virtual bool is_baseline_calibration_done() { return true; }
 
+  /// Park the sensor in its lowest-power state (true) or resume normal
+  /// measurement (false). Drivers that have no separate low-power mode
+  /// may leave this as a no-op. Calls are expected to be idempotent —
+  /// the caller may toggle false→false or true→true without effect.
+  /// Used by the product layer to suppress sensor draw during cell-side
+  /// idle phases (e.g. fuel-gauge learning RELAX_1/RELAX_2).
+  virtual void set_low_power(bool on) { (void)on; }
+
 private:
 };
 

@@ -121,6 +121,13 @@ private:
   /// Prevents repeating the alert every poll cycle.
   bool _charge_done_alerted = false;
 
+  // --- Battery Learning low-power tracking ---
+  /// True while the device is in the post-charge-done LOW_POWER state of
+  /// the Battery Learning workflow: PMID boost forced off, PM_A sampling
+  /// skipped, GPS in CFG-SLEEP.  Cleared when the user plugs USB back in
+  /// or disables battery_learning_enabled.  Runtime-only, not persisted.
+  bool _in_learning_low_power = false;
+
   // --- Admin-mode entry gesture ---
   // The tap-count constant is declared here (not in the "Constants" block
   // below) so it precedes the array dimension that uses it.
@@ -157,6 +164,20 @@ private:
   // fuel gauge has its OCV-at-rest reading captured before the user
   // disconnects.
   static constexpr uint32_t CHARGE_REST_TIMEOUT_MS = 500000;
+
+  // Battery Learning workflow constants.
+  //
+  // LEARNING_CHARGE_CURRENT_MA — BMS ICHG override while charging in
+  // learning mode.  1500 mA shortens the charge phase from ~4 h (at the
+  // default 500 mA) to ~1.5 h on a 2000 mAh cell, so the full
+  // charge → relax → discharge → relax cycle fits inside a working day.
+  //
+  // LEARNING_GPS_SLEEP_MS — CFG-SLEEP duration sent to the GPS when
+  // LOW_POWER mode is entered.  8 h covers a worst-case unattended run
+  // (5 h RELAX_1 + slack); a shorter timer would auto-wake the GPS
+  // mid-cycle and spike idle current above the gauge's sleep threshold.
+  static constexpr uint16_t LEARNING_CHARGE_CURRENT_MA = 1500;
+  static constexpr uint32_t LEARNING_GPS_SLEEP_MS = 8u * 60u * 60u * 1000u;
 
   // Admin-mode entry gesture: ADMIN_TAP_COUNT rapid Select taps within
   // ADMIN_TAP_WINDOW_MS arms the sequence; then each subsequent step
