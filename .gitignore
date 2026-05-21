@@ -14,3 +14,7 @@ __pycache__/
 .claude
 .export
 products/go/gps_workflow_explainer/
+
+# Conversation handoff documents — local-only, never committed.
+HANDOFF.md
+HANDOFF_*.md
