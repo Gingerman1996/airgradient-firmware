@@ -203,6 +203,12 @@ private:
   /// 0 = Off (always charge), 1 = On (disable charger when FC=1).
   uint8_t _setting_charge_cutoff = 0;
 
+  /// Mirror of `GoSettings::charge_disabled` — admin-only row.  Manual
+  /// override that clears the BMS EN_CHG bit unconditionally (for
+  /// BQ27427 relax-phase bench work with USB still plugged for serial).
+  /// 0 = Off (charger reconciled by FG/thermal rules), 1 = On (forced off).
+  uint8_t _setting_charge_disabled = 0;
+
   /// Mirror of `GoSettings::charge_current_ma` — admin-only row.  Stores
   /// the option index (0 = 500 mA / 1 = 1000 mA / 2 = 200 mA).  Default 0
   /// matches the production charge-current default.

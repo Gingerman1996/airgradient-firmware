@@ -201,9 +201,11 @@ PowerSnapshot PowerService::poll_bms() {
   // Thermal cutoff always wins: if the cell is hot, want_charge is forced
   // false regardless of FC state, and FC-based re-enable is suppressed
   // until the cell cools back below CHARGE_HOT_RESUME_C.
-  if (fg.flags_ok || thermal_charge_disable_now) {
+  if (fg.flags_ok || thermal_charge_disable_now || _manual_charge_disabled) {
     bool want_charge;
     if (thermal_charge_disable_now) {
+      want_charge = false;
+    } else if (_manual_charge_disabled) {
       want_charge = false;
     } else {
       want_charge = _charge_cutoff_at_full ? !fg.fc() : true;
@@ -211,9 +213,10 @@ PowerSnapshot PowerService::poll_bms() {
     if (want_charge != _charge_enabled) {
       if (_bms.set_charge_enable(want_charge)) {
         _charge_enabled = want_charge;
-        AG_LOGI(TAG, "charging %s (cutoff=%d FC=%d thermal_hot=%d)",
+        AG_LOGI(TAG, "charging %s (cutoff=%d FC=%d thermal_hot=%d manual_dis=%d)",
                 want_charge ? "ENABLED" : "DISABLED", _charge_cutoff_at_full,
-                fg.flags_ok ? fg.fc() : 0, thermal_charge_disable_now);
+                fg.flags_ok ? fg.fc() : 0, thermal_charge_disable_now,
+                _manual_charge_disabled);
       } else {
         AG_LOGW(TAG, "set_charge_enable(%d) failed", want_charge);
       }
@@ -224,10 +227,10 @@ PowerSnapshot PowerService::poll_bms() {
   // Line 1: BMS view (USB, charger state, currents on the system rail)
   const auto &t = status.telemetry;
   AG_LOGI(TAG,
-          "BMS  chg=%s en=%d src=%s vbus=%.2fV ibus=%dmA ibat=%+dmA "
+          "BMS  chg=%s en=%d chg_dis=%d src=%s vbus=%.2fV ibus=%dmA ibat=%+dmA "
           "vsys=%umV vpmid=%umV tdie=%d°C",
           bms_charging_state_str(status.charger_status.charging_state),
-          _charge_enabled,
+          _charge_enabled, _manual_charge_disabled,
           bms_power_source_str(status.charger_status.power_source),
           status.charging_voltage, t.input_current_ma, t.battery_current_ma,
           t.system_voltage_mv, t.pmid_voltage_mv, t.die_temperature_c);
@@ -506,6 +509,15 @@ bool PowerService::sync_pmid_mode(BmsPowerSource power_source) {
           bms_power_source_str(power_source), _force_pmid_passthrough ? " (forced)" : "");
   _pmid_mode = desired_mode;
   return true;
+}
+
+void PowerService::set_manual_charge_disabled(bool disabled) {
+  if (disabled == _manual_charge_disabled) {
+    return;
+  }
+  _manual_charge_disabled = disabled;
+  AG_LOGI(TAG, "manual_charge_disabled: %s (BMS reconcile on next poll)",
+          disabled ? "ON" : "OFF");
 }
 
 void PowerService::set_force_pmid_passthrough(bool force) {

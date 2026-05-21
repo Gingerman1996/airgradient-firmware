@@ -137,16 +137,18 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
   }
 
   // --- Common tail ---
-  // charge_current_ma and battery_learning_enabled are intentionally not
-  // persisted: production firmware always boots with safe defaults
-  // (500 mA / learning off).  Force-reset here so any stale NVS entry from
-  // an earlier firmware version (which did persist battery_learning_enabled)
-  // cannot leak into the new build.  Admin must opt back in per session.
+  // charge_current_ma, battery_learning_enabled, and charge_disabled are
+  // intentionally not persisted: production firmware always boots with safe
+  // defaults (500 mA / learning off / charger enabled).  Force-reset here so
+  // any stale NVS entry from an earlier firmware version cannot leak into
+  // the new build.  Admin must opt back in per session.
   _settings.charge_current_ma = 500;
   _settings.battery_learning_enabled = false;
+  _settings.charge_disabled = false;
   _svc.ui_manager.sync_settings(_settings);
   _svc.ui_manager.set_admin_mode(_settings.admin_mode);
   _svc.power_service.set_charge_cutoff_at_full(_settings.charge_cutoff_at_full);
+  _svc.power_service.set_manual_charge_disabled(_settings.charge_disabled);
   _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
   apply_led_brightness();
 
@@ -781,14 +783,17 @@ void Orchestrator::on_input(const InputEventData &input) {
   case UIAction::ExitAdminMode:
     _settings.admin_mode = false;
     // Reset admin-only overrides that production users must never inherit.
-    // charge_current_ma and battery_learning_enabled are both in-memory only
-    // (not persisted), so a future boot already defaults to safe values —
-    // but enforce here too so the BMS and the learning state machine are
-    // reconciled immediately on exit without waiting for a reboot.
+    // charge_current_ma, battery_learning_enabled, and charge_disabled are
+    // all in-memory only (not persisted), so a future boot already defaults
+    // to safe values — but enforce here too so the BMS and the learning
+    // state machine are reconciled immediately on exit without waiting for
+    // a reboot.
     _settings.charge_current_ma = 500;
     _settings.battery_learning_enabled = false;
+    _settings.charge_disabled = false;
     save_go_settings(_config_store, _settings);
     _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
+    _svc.power_service.set_manual_charge_disabled(_settings.charge_disabled);
     _svc.ui_manager.sync_settings(_settings);
     _svc.ui_manager.set_admin_mode(false);
     _svc.ui_manager.show_snackbar("Admin mode off");
@@ -923,6 +928,7 @@ void Orchestrator::apply_settings_change() {
   reschedule_sensor_timer(previous_settings);
   _svc.gps_service.set_posting_interval_ms(_settings.gps_interval_seconds * 1000);
   _svc.power_service.set_charge_cutoff_at_full(_settings.charge_cutoff_at_full);
+  _svc.power_service.set_manual_charge_disabled(_settings.charge_disabled);
   _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
   apply_led_brightness();
 

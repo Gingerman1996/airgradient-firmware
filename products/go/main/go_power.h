@@ -125,6 +125,14 @@ public:
   /// at 100 %.  Default false; the admin Settings menu opts in.
   void set_charge_cutoff_at_full(bool on) { _charge_cutoff_at_full = on; }
 
+  /// Admin-only manual override: force the BMS EN_CHG bit off (or release
+  /// the override) regardless of FG Full-Charge state.  Used by the
+  /// "Disable Charge" admin Settings row during BQ27427 learning-cycle
+  /// bench work — keeps USB plugged for serial visibility while the cell
+  /// sees ~0 mA so the gauge can enter Sleep/Relax.  Higher precedence
+  /// than set_charge_cutoff_at_full(); lower than the thermal cutoff.
+  void set_manual_charge_disabled(bool disabled);
+
   /// Update the BMS fast-charge current limit (CC mode), in mA.  Idempotent:
   /// only issues an I²C write when the requested value differs from the
   /// last applied value.  Admin-only — production firmware leaves the
@@ -343,6 +351,12 @@ private:
   /// PassThrough.  Set by the Battery Learning workflow via
   /// set_force_pmid_passthrough().  See public setter for details.
   bool _force_pmid_passthrough = false;
+
+  /// When true, poll_bms() forces want_charge=false so the BMS EN_CHG bit
+  /// is cleared regardless of FG state.  Set by the "Disable Charge"
+  /// admin Settings row via set_manual_charge_disabled().  Higher
+  /// precedence than _charge_cutoff_at_full; lower than thermal cutoff.
+  bool _manual_charge_disabled = false;
 
   /// Configure timer and GPIO wake sources before entering sleep.
   /// Wrapped in #ifndef TEST_HOST — not callable from host test builds.
