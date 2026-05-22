@@ -106,6 +106,21 @@ PowerSnapshot PowerService::poll_bms() {
     bool fc() const { return flags_ok && (flags & (1u << 9)); }
     bool chg() const { return flags_ok && (flags & (1u << 8)); }
     bool dsg() const { return flags_ok && (flags & (1u << 0)); }
+    // OCVTAKEN — sticky bit set by the gauge once it has captured an OCV
+    // sample during RELAXATION.  Used to verify Phase 2 (OCV1) and Phase 4
+    // (OCV2) of the BQ27427 learning cycle without bqStudio.
+    bool ocv_taken() const { return flags_ok && (flags & (1u << 7)); }
+    bool itpor() const { return flags_ok && (flags & (1u << 5)); }
+    bool cfgupmode() const { return flags_ok && (flags & (1u << 4)); }
+    bool bat_det() const { return flags_ok && (flags & (1u << 3)); }
+    // CONTROL_STATUS() via Control(0x0000); same byte layout as Flags().
+    // TRM §5.1.1 Table 5-3.  QMAX_UP/RES_UP are both cleared after a POR, so
+    // both set = Qmax + Ra learned AND no POR since last learn.
+    bool ctrl_ok = false;
+    uint16_t ctrl = 0;
+    bool qmax_up() const { return ctrl_ok && (ctrl & (1u << 9)); }
+    bool res_up() const { return ctrl_ok && (ctrl & (1u << 8)); }
+    bool vok() const { return ctrl_ok && (ctrl & (1u << 1)); }
   } fg;
   if (_fuel_gauge != nullptr) {
     fg.present = true;
@@ -117,6 +132,7 @@ PowerSnapshot PowerService::poll_bms() {
     fg.fcc_ok = _fuel_gauge->read_full_charge_capacity_mah(fg.fcc_mah);
     fg.t_ok = _fuel_gauge->read_internal_temperature_c(fg.t_c);
     fg.flags_ok = _fuel_gauge->read_flags(fg.flags);
+    fg.ctrl_ok = _fuel_gauge->control_subcommand(0x0000, fg.ctrl);
   }
 
   // --- SOC source: prefer FG; fall back to BMS voltage curve ---
@@ -136,9 +152,11 @@ PowerSnapshot PowerService::poll_bms() {
 
   // --- BMS status (charge state, power source, regulation flags) ---
   BmsStatus bms_status{};
+  bool on_battery = false;
   if (_bms.read_status(bms_status)) {
     status.charging_status = bms_status.charging_state;
     status.charger_status = bms_status;
+    on_battery = !bms_power_source_has_external_input(bms_status.power_source);
     if (!sync_pmid_mode(bms_status.power_source)) {
       AG_LOGW(TAG, "failed to sync PMID mode for source %s",
               bms_power_source_str(bms_status.power_source));
@@ -184,6 +202,42 @@ PowerSnapshot PowerService::poll_bms() {
               t_batt, CHARGE_HOT_RESUME_C);
       _thermal_charge_disabled = false;
       thermal_charge_disable_now = false;
+    }
+  }
+
+  // --- Over-discharge protection (EDV cutoff -> ship mode) ---
+  // The +3.1V buck-boost holds the system rail steady as the cell sags, so on
+  // battery there is no brownout to throttle the load — the cell would be
+  // dragged to the pack DW01 trip (~2.4V), cutting PACK+ and PORing the
+  // BQ27427 (wiping its learning).  Cut the system into ship mode while the
+  // cell still has headroom: EDV_SHIP_MV under load relaxes to ~3.0V OCV once
+  // the BATFET opens, above DW01.  Same enter_ship_mode() primitive the power
+  // button uses (PowerService::shutdown()).  Debounced to ride out transient
+  // load dips; skipped on USB (the charger ignores ship mode with VBUS).
+  uint16_t cell_mv = 0;
+  bool cell_mv_ok = false;
+  if (fg.v_ok) {
+    cell_mv = fg.v_mv;
+    cell_mv_ok = true;
+  } else if (status.telemetry.is_battery_voltage_valid()) {
+    cell_mv = static_cast<uint16_t>(status.telemetry.battery_voltage * 1000.0f);
+    cell_mv_ok = true;
+  }
+  if (!_edv_ship_mode_triggered && on_battery && cell_mv_ok) {
+    if (cell_mv < EDV_SHIP_MV) {
+      if (++_edv_low_count >= EDV_SHIP_DEBOUNCE_SAMPLES) {
+        AG_LOGE(TAG,
+                "VBAT %umV < EDV cutoff %umV for %u polls — entering ship mode "
+                "to protect cell (relaxed OCV ~3.0V, above DW01)",
+                cell_mv, EDV_SHIP_MV, _edv_low_count);
+        if (_bms.enter_ship_mode()) {
+          _edv_ship_mode_triggered = true;
+        } else {
+          AG_LOGE(TAG, "enter_ship_mode() failed during EDV trip");
+        }
+      }
+    } else {
+      _edv_low_count = 0;
     }
   }
 
@@ -239,7 +293,8 @@ PowerSnapshot PowerService::poll_bms() {
   if (fg.present) {
     AG_LOGI(TAG,
             "FG   SOC=%s%u%% V=%s%.3fV I=%s%+dmA P=%s%+dmW "
-            "rem=%s%u/%s%umAh T=%s%.1f°C [FC=%d CHG=%d DSG=%d] src=%s",
+            "rem=%s%u/%s%umAh T=%s%.1f°C [FC=%d CHG=%d DSG=%d OCV=%d "
+            "ITPOR=%d CFGUP=%d BATDET=%d] src=%s",
             fg.soc_ok ? "" : "?", fg.soc,
             fg.v_ok ? "" : "?", fg.v_mv / 1000.0f,
             fg.i_ok ? "" : "?", fg.i_ma,
@@ -247,8 +302,27 @@ PowerSnapshot PowerService::poll_bms() {
             fg.rem_ok ? "" : "?", fg.rem_mah,
             fg.fcc_ok ? "" : "?", fg.fcc_mah,
             fg.t_ok ? "" : "?", fg.t_c,
-            fg.fc(), fg.chg(), fg.dsg(),
+            fg.fc(), fg.chg(), fg.dsg(), fg.ocv_taken(),
+            fg.itpor(), fg.cfgupmode(), fg.bat_det(),
             soc_from_fg ? "FG" : "BMS");
+  }
+
+  // Line 3: Impedance-Track learning telemetry (bench diagnostic).  QMAX_UP/
+  // RES_UP/VOK from CONTROL_STATUS; OCV-window zone from the Qmax-invalid band.
+  // Ungated: poll_bms() has no admin/settings access and Line 2 above is
+  // likewise always-on.
+  // TODO(go): also log Update Status (DM subclass 82, offset 0) once its
+  // register location is confirmed for the BQ27427.
+  if (fg.present) {
+    const char *ocv_zone = !fg.v_ok ? "V?"
+        : (fg.v_mv > Q_INVALID_MAX_MV) ? "ABOVE-FLAT(>3811:OCV1-zone)"
+        : (fg.v_mv < Q_INVALID_MIN_MV) ? "BELOW-FLAT(<3750:OCV2-zone)"
+                                       : "FLAT(Qmax-invalid)";
+    AG_LOGI(TAG, "FG-LRN QMAX_UP=%s RES_UP=%s VOK=%s | V=%s%umV %s",
+            fg.ctrl_ok ? (fg.qmax_up() ? "1" : "0") : "?",
+            fg.ctrl_ok ? (fg.res_up() ? "1" : "0") : "?",
+            fg.ctrl_ok ? (fg.vok() ? "1" : "0") : "?",
+            fg.v_ok ? "" : "?", fg.v_mv, ocv_zone);
   }
 
   // Regulation flags only when something is actually active — these are

@@ -316,6 +316,25 @@ public:
   static constexpr float CHARGE_HOT_RESUME_C = 47.0f;
   static constexpr float SHIP_MODE_HOT_C = 60.0f;
 
+  // --- Over-discharge protection (EDV cutoff -> ship mode) ---
+  //
+  // On battery the +3.1V buck-boost (U2) holds the system rail up as the cell
+  // sags, so nothing throttles the load until the pack DW01 protection trips
+  // at ~2.4 V — which cuts PACK+ and PORs the BQ27427 (wiping its
+  // impedance-track learning).  Trip ship mode at 2.9 V under load: once the
+  // BATFET opens the relaxed OCV recovers to ~3.0 V, safely above DW01.
+  // Debounced over consecutive BMS_POLL_INTERVAL_MS (10 s) polls so a
+  // transient load dip (Wi-Fi TX, e-paper refresh, buzzer) doesn't trip it.
+  static constexpr uint16_t EDV_SHIP_MV = 2900;
+  static constexpr uint8_t EDV_SHIP_DEBOUNCE_SAMPLES = 3;
+
+  // Qmax disqualification region (TRM §7.4.4.1.1) — OCV measurements taken
+  // with the cell in the flat 3750..3811 mV band are rejected for Qmax.  A
+  // valid learning cycle needs OCV1 above the max and OCV2 below the min.
+  // Used only to annotate the FG-LRN diagnostic log line in poll_bms().
+  static constexpr uint16_t Q_INVALID_MAX_MV = 3811;
+  static constexpr uint16_t Q_INVALID_MIN_MV = 3750;
+
 private:
   BmsDevice &_bms;
   const gpio::Hal &_gpio;
@@ -340,6 +359,16 @@ private:
   /// Latched true once the over-temperature ship-mode trip has fired, so we
   /// don't spam enter_ship_mode() while the BATFET_DLY (12.5 s) winds down.
   bool _thermal_ship_mode_triggered = false;
+
+  /// Consecutive poll_bms() samples with cell voltage below EDV_SHIP_MV.
+  /// Reset whenever a valid reading lands at/above the threshold.  See the
+  /// EDV over-discharge cutoff in poll_bms().
+  uint8_t _edv_low_count = 0;
+
+  /// Latched true once the EDV over-discharge ship-mode trip has fired,
+  /// mirroring _thermal_ship_mode_triggered, so we don't re-issue
+  /// enter_ship_mode() during the BATFET_DLY (~12.5 s) shutdown window.
+  bool _edv_ship_mode_triggered = false;
 
   /// Last fast-charge current applied to the BMS, in mA.  0 = no value
   /// pushed yet; the first set_charge_current_ma() call always writes
