@@ -137,18 +137,19 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
   }
 
   // --- Common tail ---
-  // charge_current_ma, battery_learning_enabled, and charge_disabled are
-  // intentionally not persisted: production firmware always boots with safe
-  // defaults (500 mA / learning off / charger enabled).  Force-reset here so
-  // any stale NVS entry from an earlier firmware version cannot leak into
-  // the new build.  Admin must opt back in per session.
+  // charge_current_ma and battery_learning_enabled are intentionally not
+  // persisted: production firmware always boots with safe defaults (500 mA /
+  // learning off).  Force-reset here so any stale NVS entry from an earlier
+  // firmware version cannot leak into the new build.  Admin must opt back in
+  // per session.  The manual charge-disable override is runtime-only on
+  // PowerService — explicit clear here so the field starts clean on every
+  // boot regardless of how the previous session exited.
   _settings.charge_current_ma = 500;
   _settings.battery_learning_enabled = false;
-  _settings.charge_disabled = false;
   _svc.ui_manager.sync_settings(_settings);
   _svc.ui_manager.set_admin_mode(_settings.admin_mode);
   _svc.power_service.set_charge_cutoff_at_full(_settings.charge_cutoff_at_full);
-  _svc.power_service.set_manual_charge_disabled(_settings.charge_disabled);
+  _svc.power_service.set_manual_charge_disabled(false);
   _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
   apply_led_brightness();
 
@@ -157,6 +158,7 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
   }
 
   _latest_power = _svc.power_service.poll_bms();
+  handle_edv_cutoff();
 
   uint32_t now = static_cast<uint32_t>(RTOS::get_time_ms());
   _last_measurement_ms = now;
@@ -347,6 +349,7 @@ void Orchestrator::check_timers() {
 
 void Orchestrator::on_bms_timer() {
   _latest_power = _svc.power_service.poll_bms();
+  handle_edv_cutoff();
   uint32_t now = static_cast<uint32_t>(RTOS::get_time_ms());
   _last_bms_poll_ms = now;
   _last_bms_status_poll_ms = now; // Full poll subsumes the fast status check.
@@ -401,6 +404,14 @@ void Orchestrator::on_bms_status_timer() {
       _charge_done_start_ms = now_ms;
       _charge_done_alerted = false;
       AG_LOGI(TAG, "charge done — starting %u s rest countdown", CHARGE_REST_TIMEOUT_MS / 1000);
+      // Force EN_CHG off so the cell drops off BMS float and enters true
+      // relax with USB still plugged.  Per sluucd5 §7.4.2.2.1 the gauge
+      // needs |I| < Quit Current (~53 mA for a 1340 mAh cell) for
+      // Dsg Relax Time (60 s) to enter RELAXATION, then OCV Wait Time
+      // (60 s) before OCV1 — total ~120 s.  With charge disabled and the
+      // load fed from PMID, ibat ≈ 0 mA clears this by a wide margin.
+      _svc.power_service.set_manual_charge_disabled(true);
+      AG_LOGI(TAG, "blearn auto: disabling charge for RELAX_1, expect OCV1 at T+120s");
       static constexpr BuzzerService::Note kChargeDoneMelody[] = {
           {1500, 100}, {0, 50}, {2000, 100}, {0, 50}, {2500, 150},
       };
@@ -431,30 +442,27 @@ void Orchestrator::on_bms_status_timer() {
     // stops, USB is removed, or learning is disabled.  PowerService's
     // setter is idempotent, so the per-tick push only costs one comparison.
     //
-    // LOW_POWER mode: edge-triggered on (learning_ux && !plugged_in).
-    // Entry kills the PMID +5 V boost (drops SPS30 power), puts GPS into
-    // an 8 h CFG-SLEEP, and gates PM sampling (handled in check_timers).
-    // Exit fires when USB is plugged back in or learning is disabled,
-    // restoring normal behaviour on the next sync_pmid_mode tick.
+    // LOW_POWER mode gates SPS30 / GPS / BLE / SCD4x so the cell sees minimal
+    // load.  It is active only while learning AND plugged in, and released on
+    // unplug or when learning is disabled.  See the want_low_power assignment
+    // below for why the unplugged discharge must run un-gated.
     const uint16_t desired_ichg = (learning_ux_enabled && plugged_in && now_charging)
                                       ? LEARNING_CHARGE_CURRENT_MA
                                       : _settings.charge_current_ma;
     _svc.power_service.set_charge_current_ma(desired_ichg);
 
-    // LOW_POWER is now active throughout the learning cycle (charge + relax),
-    // not just after unplug.  On VBUS the EN_PM line is the only effective
-    // way to kill SPS30 (PMID is auto-PassThrough = +5 V from VBUS); on cell
-    // PMID-PassThrough-force suppresses the cell→5 V boost converter.
-    // Apply all gates on entry so the same code path works for both phases.
-    //
-    // Beyond SPS30 + GPS + PMID, two steady-state cell-rail loads also need
-    // gating to drop below the BQ27427 sleep_current_ma=50 mA threshold:
-    //   - NimBLE advertising  (~5–30 mA): deinit BLE, re-init on exit
-    //   - SCD4x periodic mode (~17 mA):   stop_periodic, restart on exit
-    //                                     (also suspends SGP41 sampler tick)
-    // Without these two gates the residual idle current sat at ~65–70 mA
-    // and the gauge never entered Sleep → no Qmax learning.
-    const bool want_low_power = learning_ux_enabled;
+    // Gate LOW_POWER on plugged_in.  While plugged (charge + post-charge OCV1
+    // relax) the load is fed from PMID-PassThrough = +5 V off VBUS, so the cell
+    // already sits near 0 mA; gating the rails just keeps them quiet for a clean
+    // OCV1.  Once UNPLUGGED the cycle must run the full load on cell power: the
+    // fuel gauge only registers a DISCHARGE — and learns the Ra resistance grid
+    // plus end-of-discharge Fast-Qmax — when cell current exceeds its Dsg
+    // Current Threshold (~120 mA @ DC 2000; BQ27427 TRM sluucd5 §7.4.2.2.1).
+    // Holding LOW_POWER through the discharge pins idle at ~50–70 mA, below that
+    // threshold, so the gauge stays in RELAXATION and never learns Ra.  Running
+    // SPS30 + GPS + BLE + SCD4x drives a real discharge down to the EDV
+    // ship-mode cutoff (2.9 V) where the relaxed OCV2 is taken.
+    const bool want_low_power = learning_ux_enabled && plugged_in;
     if (want_low_power && !_in_learning_low_power) {
       AG_LOGI(TAG, "battery learning: entering LOW_POWER (SPS30 off, PMID off, PM skip, "
                    "GPS sleep %u h, BLE deinit, SCD4x idle, SGP41 sampler off)",
@@ -783,17 +791,17 @@ void Orchestrator::on_input(const InputEventData &input) {
   case UIAction::ExitAdminMode:
     _settings.admin_mode = false;
     // Reset admin-only overrides that production users must never inherit.
-    // charge_current_ma, battery_learning_enabled, and charge_disabled are
-    // all in-memory only (not persisted), so a future boot already defaults
-    // to safe values — but enforce here too so the BMS and the learning
-    // state machine are reconciled immediately on exit without waiting for
-    // a reboot.
+    // charge_current_ma and battery_learning_enabled are in-memory only (not
+    // persisted), so a future boot already defaults to safe values — but
+    // enforce here too so the BMS and the learning state machine are
+    // reconciled immediately on exit without waiting for a reboot.  The
+    // manual charge-disable override is runtime-only on PowerService; clear
+    // it here so a stale "disabled" can never carry across the admin exit.
     _settings.charge_current_ma = 500;
     _settings.battery_learning_enabled = false;
-    _settings.charge_disabled = false;
     save_go_settings(_config_store, _settings);
     _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
-    _svc.power_service.set_manual_charge_disabled(_settings.charge_disabled);
+    _svc.power_service.set_manual_charge_disabled(false);
     _svc.ui_manager.sync_settings(_settings);
     _svc.ui_manager.set_admin_mode(false);
     _svc.ui_manager.show_snackbar("Admin mode off");
@@ -928,9 +936,18 @@ void Orchestrator::apply_settings_change() {
   reschedule_sensor_timer(previous_settings);
   _svc.gps_service.set_posting_interval_ms(_settings.gps_interval_seconds * 1000);
   _svc.power_service.set_charge_cutoff_at_full(_settings.charge_cutoff_at_full);
-  _svc.power_service.set_manual_charge_disabled(_settings.charge_disabled);
   _svc.power_service.set_charge_current_ma(_settings.charge_current_ma);
   apply_led_brightness();
+
+  // Edge: turning Battery Learning off clears any auto-disable that the
+  // charge-done hook may have armed (Phase 0 → Phase 2 RELAX_1 entry).  The
+  // setter is idempotent, so a redundant clear when blearn was never on is a
+  // no-op.
+  if (previous_settings.battery_learning_enabled &&
+      !_settings.battery_learning_enabled) {
+    _svc.power_service.set_manual_charge_disabled(false);
+    AG_LOGI(TAG, "blearn auto: re-enabling charge (blearn turned off)");
+  }
 
   const bool is_gps_active_now = is_gps_active();
   if (!was_gps_active && is_gps_active_now) {
@@ -1177,6 +1194,21 @@ void Orchestrator::shutdown() {
   RTOS::delay_ms(SHUTDOWN_DISPLAY_DELAY_MS);
 
   _svc.power_service.shutdown(); // BMS QoN — does not return
+}
+
+void Orchestrator::handle_edv_cutoff() {
+  if (!_latest_power.edv_cutoff_reached) {
+    return;
+  }
+  AG_LOGI(TAG, "EDV cutoff reached — painting discharge-complete screen before ship mode");
+  _svc.ui_manager.set_screen(Screen::DischargeComplete);
+  update_display();
+
+  // Let the e-paper finish its refresh before the BATFET opens.  Same
+  // budget the power-button shutdown path uses.
+  RTOS::delay_ms(SHUTDOWN_DISPLAY_DELAY_MS);
+
+  _svc.power_service.trigger_edv_ship_mode(); // BMS QoN — does not return on success
 }
 
 // ---------------------------------------------------------------------------

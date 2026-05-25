@@ -1016,7 +1016,8 @@ bool DisplayService::update(const DisplayValues &values, bool wait) {
   _render_frame(values);
 
   const bool entering_system_screen =
-      values.screen == Screen::Shutdown || values.screen == Screen::PairingPasskey;
+      values.screen == Screen::Shutdown || values.screen == Screen::PairingPasskey ||
+      values.screen == Screen::DischargeComplete;
   const bool menu_navigation =
       !entering_system_screen &&
       (is_menu_navigation_screen(_prev_values.screen) || is_menu_navigation_screen(values.screen));
@@ -1137,6 +1138,11 @@ void DisplayService::_render_frame(const DisplayValues &v) {
     return;
   }
 
+  if (v.screen == Screen::DischargeComplete) {
+    _draw_discharge_complete();
+    return;
+  }
+
   _draw_status_bar(v);
 
   switch (v.screen) {
@@ -1155,6 +1161,7 @@ void DisplayService::_render_frame(const DisplayValues &v) {
     _draw_full_screen_list(v);
     break;
   case Screen::Shutdown:
+  case Screen::DischargeComplete:
     break; // Already handled above
   case Screen::PairingPasskey:
     _draw_pairing_passkey(v);
@@ -1541,6 +1548,13 @@ void DisplayService::_draw_shutdown() {
   u8g2_SetFont(&_u8g2, u8g2_font_6x10_tr);
   draw_centered_text(&_u8g2, CONTENT_W / 2, 115, "Powering off...");
   draw_centered_text(&_u8g2, CONTENT_W / 2, 135, "See you soon");
+  draw_logo(&_u8g2, 218, 24);
+}
+
+void DisplayService::_draw_discharge_complete() {
+  u8g2_SetFont(&_u8g2, u8g2_font_6x10_tr);
+  draw_centered_text(&_u8g2, CONTENT_W / 2, 115, "Discharge complete");
+  draw_centered_text(&_u8g2, CONTENT_W / 2, 135, "Ship mode");
   draw_logo(&_u8g2, 218, 24);
 }
 

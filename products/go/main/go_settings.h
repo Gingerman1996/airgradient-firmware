@@ -78,16 +78,6 @@ struct GoSettings {
   /// Allowed values are 200 / 500 / 1000.
   uint16_t charge_current_ma = 500;
 
-  /// Admin-only manual override: when true, the orchestrator clears the
-  /// BMS EN_CHG bit unconditionally, regardless of FG Full-Charge state.
-  /// Used during BQ27427 learning-cycle bench work to put the cell into
-  /// zero-current relax while USB-C stays plugged for serial monitoring.
-  /// Higher precedence than `charge_cutoff_at_full`; lower precedence
-  /// than the thermal over-temperature cutoff.  Not persisted — admin
-  /// must opt back in per session so a stale "disabled" can never carry
-  /// across a reboot and prevent the cell from charging.
-  bool charge_disabled = false;
-
   /// User-selected melody preference for the Settings → Play Sound row.
   /// Persisted across reboots; the menu fires the chosen melody on every
   /// re-confirm.  Default Off so production devices stay quiet unless the

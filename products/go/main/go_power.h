@@ -33,6 +33,13 @@ struct PowerSnapshot {
   BmsChargingState charging_status = BmsChargingState::Unknown;
   bool critical = false; ///< true when battery_percentage < BATTERY_CRITICAL_PERCENT
 
+  /// Set by poll_bms() once the EDV over-discharge cutoff debounces (cell
+  /// below EDV_SHIP_MV for EDV_SHIP_DEBOUNCE_SAMPLES polls).  The orchestrator
+  /// reacts by painting the "Discharge complete" screen and then calling
+  /// trigger_edv_ship_mode() — the e-paper frame must land before the BATFET
+  /// opens.  poll_bms() deliberately does NOT enter ship mode itself.
+  bool edv_cutoff_reached = false;
+
   /// Full charger status (power source, regulation flags, fault flags).
   BmsStatus charger_status{};
 
@@ -125,12 +132,12 @@ public:
   /// at 100 %.  Default false; the admin Settings menu opts in.
   void set_charge_cutoff_at_full(bool on) { _charge_cutoff_at_full = on; }
 
-  /// Admin-only manual override: force the BMS EN_CHG bit off (or release
-  /// the override) regardless of FG Full-Charge state.  Used by the
-  /// "Disable Charge" admin Settings row during BQ27427 learning-cycle
-  /// bench work — keeps USB plugged for serial visibility while the cell
-  /// sees ~0 mA so the gauge can enter Sleep/Relax.  Higher precedence
-  /// than set_charge_cutoff_at_full(); lower than the thermal cutoff.
+  /// Force the BMS EN_CHG bit off (or release the override) regardless of
+  /// FG Full-Charge state.  Driven by the orchestrator's battery-learning
+  /// auto-trigger on charge-done entry — keeps USB plugged for serial
+  /// visibility while the cell sees ~0 mA so the gauge can enter
+  /// Sleep/Relax and take OCV1.  Higher precedence than
+  /// set_charge_cutoff_at_full(); lower than the thermal cutoff.
   void set_manual_charge_disabled(bool disabled);
 
   /// Update the BMS fast-charge current limit (CC mode), in mA.  Idempotent:
@@ -181,6 +188,15 @@ public:
 
   /// Trigger BMS QoN (ship mode).  Device powers off.  Does not return.
   void shutdown();
+
+  /// Enter ship mode in response to the EDV over-discharge cutoff.  Called by
+  /// the orchestrator after it has painted the "Discharge complete" screen
+  /// (PowerSnapshot::edv_cutoff_reached).  Latches the internal trip guard on
+  /// success so subsequent polls don't re-fire during the BATFET_DLY window;
+  /// leaves it clear on failure so the next poll retries.  Device powers off
+  /// on success (BATFET opens after t_BATFET_DLY ~12.5 s).
+  /// @return true if enter_ship_mode() succeeded.
+  bool trigger_edv_ship_mode();
 
   // -------------------------------------------------------------------------
   // External watchdog
@@ -382,9 +398,9 @@ private:
   bool _force_pmid_passthrough = false;
 
   /// When true, poll_bms() forces want_charge=false so the BMS EN_CHG bit
-  /// is cleared regardless of FG state.  Set by the "Disable Charge"
-  /// admin Settings row via set_manual_charge_disabled().  Higher
-  /// precedence than _charge_cutoff_at_full; lower than thermal cutoff.
+  /// is cleared regardless of FG state.  Set via set_manual_charge_disabled()
+  /// by the orchestrator's blearn auto-trigger on charge-done entry.
+  /// Higher precedence than _charge_cutoff_at_full; lower than thermal cutoff.
   bool _manual_charge_disabled = false;
 
   /// Configure timer and GPIO wake sources before entering sleep.

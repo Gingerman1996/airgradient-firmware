@@ -50,11 +50,6 @@ static constexpr uint8_t BATTERY_LEARNING_COUNT = 2;
 static const char *const CHARGE_CUTOFF_OPTIONS[] = {"Off", "On"};
 static constexpr uint8_t CHARGE_CUTOFF_COUNT = 2;
 
-// Manual charge disable (force EN_CHG off, regardless of FG) — Off/On.
-// Admin-only.  Used for BQ27427 relax-phase bench debugging.
-static const char *const CHARGE_DISABLE_OPTIONS[] = {"Off", "On"};
-static constexpr uint8_t CHARGE_DISABLE_COUNT = 2;
-
 // Fast-charge current (BMS ICHG).  Admin-only.  Index 0 is the production
 // default; ordering matches the in-menu cycle the user requested.
 static const char *const CHARGE_CURRENT_OPTIONS[] = {"500mA", "1000mA", "200mA"};
@@ -94,13 +89,12 @@ static constexpr uint8_t SETTING_CLEAR_DATA = 13;
 // `total - ADMIN_HIDDEN_ROWS` when admin mode is off.
 static constexpr uint8_t SETTING_BATTERY_LEARNING = 14;
 static constexpr uint8_t SETTING_CHARGE_CUTOFF = 15;
-static constexpr uint8_t SETTING_CHARGE_DISABLE = 16;
-static constexpr uint8_t SETTING_CHARGE_CURRENT = 17;
-static constexpr uint8_t SETTING_GPS_SLEEP_TEST = 18;
-static constexpr uint8_t SETTING_EXIT_ADMIN = 19;
-static constexpr uint8_t ADMIN_HIDDEN_ROWS = 6;
+static constexpr uint8_t SETTING_CHARGE_CURRENT = 16;
+static constexpr uint8_t SETTING_GPS_SLEEP_TEST = 17;
+static constexpr uint8_t SETTING_EXIT_ADMIN = 18;
+static constexpr uint8_t ADMIN_HIDDEN_ROWS = 5;
 
-static constexpr uint8_t SETTINGS_TOTAL = 20;       // indices 0..19
+static constexpr uint8_t SETTINGS_TOTAL = 19;       // indices 0..18
 static constexpr uint8_t TAG_LIST_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t MAIN_MENU_TOTAL = 4;       // indices 0..3
 static constexpr uint8_t CONFIRM_TOTAL = 5;         // indices 0..4
@@ -188,6 +182,7 @@ UIActionResult UIManager::handle_input(InputSource source, InputType type) {
   case Screen::Confirm:
     return dispatch_confirm(source, type);
   case Screen::Shutdown:
+  case Screen::DischargeComplete:
   case Screen::PairingPasskey:
     return {};
   }
@@ -259,6 +254,7 @@ DisplayValues UIManager::build_values(const BuildContext &ctx) const {
     populate_confirm_rows(v);
     break;
   case Screen::Shutdown:
+  case Screen::DischargeComplete:
     break;
   case Screen::PairingPasskey:
     v.ble_passkey = _ble_passkey;
@@ -384,7 +380,6 @@ void UIManager::sync_settings(const GoSettings &s) {
       (s.touch_led_brightness < TOUCH_LED_COUNT) ? s.touch_led_brightness : 0;
   _setting_battery_learning = s.battery_learning_enabled ? 1 : 0;
   _setting_charge_cutoff = s.charge_cutoff_at_full ? 1 : 0;
-  _setting_charge_disabled = s.charge_disabled ? 1 : 0;
 
   _setting_charge_current = 0; // default to "500mA" if the value is unknown
   for (uint8_t i = 0; i < CHARGE_CURRENT_COUNT; ++i) {
@@ -462,7 +457,6 @@ void UIManager::apply_to_settings(GoSettings &settings) const {
       (_setting_touch_led < TOUCH_LED_COUNT) ? _setting_touch_led : 0;
   settings.battery_learning_enabled = (_setting_battery_learning != 0);
   settings.charge_cutoff_at_full = (_setting_charge_cutoff != 0);
-  settings.charge_disabled = (_setting_charge_disabled != 0);
   settings.charge_current_ma = (_setting_charge_current < CHARGE_CURRENT_COUNT)
                                    ? CHARGE_CURRENT_VALUES_MA[_setting_charge_current]
                                    : CHARGE_CURRENT_VALUES_MA[0];
@@ -629,8 +623,6 @@ uint8_t UIManager::setting_option_count(uint8_t setting_id) const {
     return BATTERY_LEARNING_COUNT;
   case SETTING_CHARGE_CUTOFF:
     return CHARGE_CUTOFF_COUNT;
-  case SETTING_CHARGE_DISABLE:
-    return CHARGE_DISABLE_COUNT;
   case SETTING_CHARGE_CURRENT:
     return CHARGE_CURRENT_COUNT;
   default:
@@ -664,8 +656,6 @@ uint8_t UIManager::setting_current_option(uint8_t setting_id) const {
     return _setting_battery_learning;
   case SETTING_CHARGE_CUTOFF:
     return _setting_charge_cutoff;
-  case SETTING_CHARGE_DISABLE:
-    return _setting_charge_disabled;
   case SETTING_CHARGE_CURRENT:
     return _setting_charge_current;
   default:
@@ -714,9 +704,6 @@ void UIManager::apply_setting_choice(uint8_t option_index) {
     break;
   case SETTING_CHARGE_CUTOFF:
     _setting_charge_cutoff = option_index;
-    break;
-  case SETTING_CHARGE_DISABLE:
-    _setting_charge_disabled = option_index;
     break;
   case SETTING_CHARGE_CURRENT:
     _setting_charge_current = option_index;
@@ -854,7 +841,6 @@ UIActionResult UIManager::dispatch_settings(InputSource source, InputType type) 
                 _settings_index <= SETTING_PLAY_SOUND) ||
                (_settings_index == SETTING_BATTERY_LEARNING && _admin_mode) ||
                (_settings_index == SETTING_CHARGE_CUTOFF && _admin_mode) ||
-               (_settings_index == SETTING_CHARGE_DISABLE && _admin_mode) ||
                (_settings_index == SETTING_CHARGE_CURRENT && _admin_mode)) {
       // Open choice screen for this setting
       open_settings_choice(_settings_index);
@@ -1121,14 +1107,6 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
       (void)snprintf(label, sizeof(label), "Charge Cutoff: %s",
                      CHARGE_CUTOFF_OPTIONS[_setting_charge_cutoff]);
       break;
-    case SETTING_CHARGE_DISABLE:
-      // Admin-only — hidden in production.
-      if (!_admin_mode) {
-        continue;
-      }
-      (void)snprintf(label, sizeof(label), "Disable Charge: %s",
-                     CHARGE_DISABLE_OPTIONS[_setting_charge_disabled]);
-      break;
     case SETTING_CHARGE_CURRENT:
       // Admin-only — hidden in production.
       if (!_admin_mode) {
@@ -1209,9 +1187,6 @@ void UIManager::populate_settings_choice_rows(DisplayValues &v) const {
     break;
   case SETTING_CHARGE_CUTOFF:
     options = CHARGE_CUTOFF_OPTIONS;
-    break;
-  case SETTING_CHARGE_DISABLE:
-    options = CHARGE_DISABLE_OPTIONS;
     break;
   case SETTING_CHARGE_CURRENT:
     options = CHARGE_CURRENT_OPTIONS;

@@ -227,14 +227,13 @@ PowerSnapshot PowerService::poll_bms() {
     if (cell_mv < EDV_SHIP_MV) {
       if (++_edv_low_count >= EDV_SHIP_DEBOUNCE_SAMPLES) {
         AG_LOGE(TAG,
-                "VBAT %umV < EDV cutoff %umV for %u polls — entering ship mode "
-                "to protect cell (relaxed OCV ~3.0V, above DW01)",
+                "VBAT %umV < EDV cutoff %umV for %u polls — discharge complete, "
+                "signalling ship mode (relaxed OCV ~3.0V, above DW01)",
                 cell_mv, EDV_SHIP_MV, _edv_low_count);
-        if (_bms.enter_ship_mode()) {
-          _edv_ship_mode_triggered = true;
-        } else {
-          AG_LOGE(TAG, "enter_ship_mode() failed during EDV trip");
-        }
+        // Defer the actual ship-mode entry to the orchestrator so the
+        // "Discharge complete" e-paper frame lands before the BATFET opens.
+        // trigger_edv_ship_mode() sets _edv_ship_mode_triggered on success.
+        status.edv_cutoff_reached = true;
       }
     } else {
       _edv_low_count = 0;
@@ -422,6 +421,19 @@ void PowerService::shutdown() {
     esp_sleep_enable_ext1_wakeup(wake_mask, ESP_EXT1_WAKEUP_ANY_LOW);
   }
   esp_deep_sleep_start();
+#endif
+}
+
+bool PowerService::trigger_edv_ship_mode() {
+#ifndef TEST_HOST
+  if (_bms.enter_ship_mode()) {
+    _edv_ship_mode_triggered = true;
+    return true;
+  }
+  AG_LOGE(TAG, "enter_ship_mode() failed during EDV trip");
+  return false;
+#else
+  return false;
 #endif
 }
 

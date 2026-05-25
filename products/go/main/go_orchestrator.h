@@ -244,6 +244,12 @@ private:
   void on_bms_timer();
   void on_bms_status_timer();
   void on_inactivity_timeout();
+
+  /// When the last poll_bms() flagged the EDV over-discharge cutoff, paint the
+  /// "Discharge complete" screen and enter ship mode.  No-op otherwise.  Must
+  /// run synchronously right after poll_bms() so the e-paper frame is flushed
+  /// before the BATFET opens.  Does not return on success (device powers off).
+  void handle_edv_cutoff();
   void reschedule_sensor_timer(const GoSettings &previous_settings);
 
   // --- Display ---

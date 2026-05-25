@@ -19,7 +19,8 @@ enum class Screen : uint8_t {
   About,
   Confirm,
   Shutdown,
-  PairingPasskey, ///< Shows 6-digit BLE pairing passkey
+  PairingPasskey,   ///< Shows 6-digit BLE pairing passkey
+  DischargeComplete, ///< Battery-learning EDV cutoff reached — shown before ship mode
 };
 
 enum class Metric : uint8_t {
@@ -266,6 +267,7 @@ private:
   void _draw_full_screen_list(const DisplayValues &v);
   void _draw_snackbar(const DisplayValues &v);
   void _draw_shutdown();
+  void _draw_discharge_complete();
   void _draw_pairing_passkey(const DisplayValues &v);
   void _draw_chart(const DisplayValues &v);
 

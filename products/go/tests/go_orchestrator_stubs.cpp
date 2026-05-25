@@ -439,6 +439,11 @@ bool PowerService::set_charge_current_ma(uint16_t /*current_ma*/) { return true;
 
 void PowerService::shutdown() { test_spy::shutdown_called = true; }
 
+bool PowerService::trigger_edv_ship_mode() {
+  test_spy::shutdown_called = true;
+  return true;
+}
+
 void PowerService::save_state(const RtcAppState &state) {
   test_spy::state_saved = true;
   test_spy::last_saved_state = state;

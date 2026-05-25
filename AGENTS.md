@@ -203,9 +203,8 @@ preserved for wire compatibility with older BLE clients (no read/write).
    plugged in, the existing 500 s rest countdown fires (matches the
    BQ27427 ResRelax Time so OCV1 settles before the user disconnects),
    followed by LED8 blink + 4-note "unplug me" beep. Unchanged.
-3. **LOW_POWER state — ACTIVE THROUGHOUT THE CYCLE** (edge-triggered the
-   moment `battery_learning_enabled && admin_mode` becomes true,
-   regardless of plug state):
+3. **LOW_POWER state — ACTIVE ONLY WHILE PLUGGED IN** (edge-triggered on
+   `battery_learning_enabled && admin_mode && plugged_in`):
    - `PowerService::set_pm_power(false)` — drives EN_PM HIGH, killing the
      SPS30 directly.  The *only* effective gate while VBUS is present
      (PMID is auto-PassThrough = +5 V from VBUS during charge, so PMID
@@ -218,10 +217,12 @@ preserved for wire compatibility with older BLE clients (no read/write).
    - `_in_learning_low_power = true` — `check_timers()` then strips
      `SensorGroup::PM` from the measurement request mask, so the sensor
      producer never tries to read the (now powered-off) SPS30.
-   Exit fires when the toggle (or admin mode) goes false: PM power
-   restored, force flag released, GPS woken.  Plug state never triggers
-   exit by itself — the user keeps low-power gates through the full
-   charge → unplug → relax → discharge → relax cycle.
+   **Exit fires on USB unplug** (as well as toggle/admin-mode off): PM
+   power restored, force flag released, GPS woken, full sensor load
+   resumed.  This is deliberate — while plugged the load runs off VBUS so
+   the cell already sits near 0 mA (clean OCV1 relax); once unplugged the
+   discharge must run the **full** load so the gauge actually registers a
+   DISCHARGE and learns Ra.  See "Why" below.
 4. **E-paper home screen swap**: when the toggle is on, `DisplayService`
    replaces the normal sensor grid (PM2.5 / CO2 / Temp / Humidity / TVOC /
    NOx) with a power dashboard rendering SOC, V, I, remaining/full-charge
@@ -234,13 +235,25 @@ preserved for wire compatibility with older BLE clients (no read/write).
    `DisplayService::_draw_power_dashboard()`.  Refresh cadence is whatever
    the existing display update flow uses (BMS poll triggers an update).
 
-**Why these specifically**: the gauge needs idle current below
-`sleep_current_ma` (50 mA, set in `go_hardware_board.cpp:223`) for ~5 h to
-enter Relax → take OCV → update Qmax. SPS30 (~50 mA running) and GPS
-(~30 mA active) are the two biggest non-essential loads; killing them gets
-GO v0.3 down to ~15-20 mA total. We deliberately do NOT raise
-`sleep_current_ma` in firmware — production units must keep the 50 mA
-threshold so their normal-use Qmax updates remain meaningful.
+**Why gate on plugged_in** (corrected 2026-05-24 against sluucd5; full
+datasheet trace + citations in `fg_learning_sequence.md` at repo root):
+learning is gated by the gauge's Impedance-Track state machine, **not** by
+SLEEP.  Three *independent* current thresholds (BQ27427 TRM §7.4.2.2.1, all
+scaled by Design Capacity = 2000 mAh):
+- `|I| < Quit Current` (80 mA) → RELAXATION → OCV / OCV-pair Qmax
+- `|I| > Dsg Current Threshold` (120 mA) → DISCHARGE → Ra grid + Fast-Qmax
+- `|I| < Sleep Current` (50 mA, `go_hardware_board.cpp:223`) → SLEEP — a
+  power state only, **not** a learning gate (this was the earlier
+  misdiagnosis that drove "hold LOW_POWER throughout").
+
+So the two phases want *opposite* currents: near-0 mA at the OCV relax
+windows, but **above 120 mA** through the discharge.  Holding the gates
+through the unplugged discharge pinned idle at ~50-70 mA — below the Dsg
+threshold — so the gauge stayed in RELAXATION and never learned Ra.
+Releasing on unplug lets the device's own full load (SPS30+GPS+BLE+SCD4x)
+drive a real DISCHARGE.  We deliberately do NOT raise `sleep_current_ma` —
+production units keep the 50 mA threshold so normal-use Qmax updates remain
+meaningful.
 
 **Full bench-test cycle for a fresh gauge**:
 
@@ -251,19 +264,32 @@ threshold so their normal-use Qmax updates remain meaningful.
 2. Phase 1 — plug USB. Charger runs at 1500 mA, reaches Taper, BMS
    transitions to NotCharging. Charge-done melody + 500 s rest countdown
    fires. Wait for LED8 blink + unplug beep.
-3. Phase 2 — unplug USB at the beep. LOW_POWER engages automatically. Let
-   sit for ≥5 h on cell power. Idle current should be < 20 mA.
-4. Phase 3 — apply ~15 Ω 5 W resistor across the cell terminals (JST,
-   **NOT** the USB-C OTG output — connecting across +5 V boost multiplies
-   apparent cell current via the BQ25628's boost converter). Total cell
-   load ~400 mA = C/5 for a 2000 mAh cell. Discharge to EDV0 (V_term =
-   3.0 V).
-5. Phase 4 — remove the load. Let sit another ≥5 h on cell power. Gauge
-   takes OCV2 → updates Ra Table. `Update Status` register (DM subclass
-   82, offset 0) should transition 0x05 → 0x06.
-6. Phase 5 — connect bqstudio over I²C (EV2400 or equivalent), confirm
-   Update Status = 0x06, export Tools → Golden Image → `.gg`. Bake into
-   firmware for production.
+3. Phase 2 (OCV1) — at the beep the cell is in its post-charge relax
+   (charge auto-disabled, still on USB, cell ≈ 0 mA off VBUS). Leave
+   plugged ~2 min for OCV1 (Charge Relax Time 60 s + OCV Wait Time 60 s),
+   then unplug. On unplug LOW_POWER **exits** and the device runs full load.
+4. Phase 3 (discharge) — the device's own load (SPS30+GPS+BLE+SCD4x,
+   ~120-200 mA) discharges the cell. **No external resistor** — the old
+   JST-resistor method risked the 1.9 A USB-OTG mistake (see git history).
+   Confirm via the `FG ... I=` / `ibat_ma` log that cell current stays
+   below −120 mA (Dsg Current Threshold) continuously for >500 s so the
+   gauge is in DISCHARGE; otherwise add load. Discharges to the EDV
+   ship-mode cutoff (2.9 V, §7.5.1) where the BATFET opens.
+5. Phase 4 (OCV2) — after ship mode the gauge is on its own VBAT (BAT pin
+   on PACK+); the load is gone, it relaxes and takes OCV2, then computes
+   Qmax. No manual load removal needed — ship mode did it.
+6. Phase 5 (verify) — read **CONTROL_STATUS** (QMAX_UP / RES_UP), not the
+   bqStudio "Update Status = 0x06" nomenclature (that's tooling, not the
+   chip — corrected 2026-05-24). RES_UP only sets after QMAX_UP, so full Ra
+   confirmation may need a second discharge.
+
+> **Authoritative reference:** the datasheet-verified end-to-end sequence
+> (with sluucd5 page/section citations, the config-register prerequisites,
+> and the Qmax-vs-Ra gating) lives in `fg_learning_sequence.md` at repo
+> root. The steps above are the quick bench checklist; that doc is ground
+> truth. The `.gg` golden-image export was dropped — the BQ27427 ships
+> SEALED with no clean ESP32-side dump; use firmware CONTROL_STATUS logging
+> as the Phase 5 substitute (EV2400 tap deferred to a future board rev).
 
 **Critical invariant — do not break**:
 
@@ -281,6 +307,42 @@ The `sleep_current_ma = 50` value in that same struct is the
 production-correct threshold for normal-use Qmax updates. The Battery
 Learning workflow above gets temporary idle current under 50 mA via
 peripheral shutdown, not by raising the threshold.
+
+### 7.5.1 Over-discharge cutoff (EDV → ship mode)
+
+A permanent safety guard in `PowerService::poll_bms()`
+(`products/go/main/go_power.cpp`) enters ship mode when the cell is being
+over-discharged. **Not** gated under `battery_learning_enabled` — it
+protects production units too.
+
+**Why it is needed**: ESP32-C5 and the whole board run on the `+3.1V`
+rail from the TPS63802 buck-boost (U2), whose VIN is `SYS` (downstream of
+the BQ25628 BATFET). The buck-boost holds `+3.1V` steady as the cell sags,
+so on battery there is **no brownout** to throttle the load — left
+unattended, the system drags the cell down to the in-pack DW01 protection
+trip (~2.4 V). DW01 opening cuts `PACK+`, which is the **only** supply for
+the BQ27427 fuel gauge (its BAT pin sits on `PACK+`, upstream of the
+BATFET). The gauge then undergoes a POR that wipes its impedance-track RAM
+(Qmax / Ra / QMAX_UP revert to ROM defaults), destroying any in-progress or
+learned gauging.
+
+**Behaviour**: when on battery (no VBUS) and the cell voltage stays below
+`EDV_SHIP_MV` (2900 mV) for `EDV_SHIP_DEBOUNCE_SAMPLES` (3) consecutive
+`BMS_POLL_INTERVAL_MS` (10 s) polls, `poll_bms()` calls
+`_bms.enter_ship_mode()` — the **same primitive the power-off button uses**
+(`Orchestrator::shutdown()` → `PowerService::shutdown()`). Constants and the
+`_edv_low_count` / `_edv_ship_mode_triggered` members live next to the
+thermal-trip fields in `go_power.h`; the trip block mirrors the existing
+over-temperature ship-mode trip.
+
+**Why 2.9 V**: that is the loaded voltage; once the BATFET opens and the
+load is removed the relaxed OCV recovers to ~3.0 V, comfortably above the
+DW01 trip. The debounce rides out transient load dips (Wi-Fi TX, e-paper
+refresh, buzzer). It is skipped while USB is present because the BQ25628
+ignores a ship-mode request with VBUS applied. Because the FG is upstream
+of the BATFET, ship mode powers the system down but the gauge keeps its
+supply and the cell relaxes — so this also serves as the Phase 4 backstop
+for the learning cycle above (Phase 3 can no longer run to DW01).
 
 ## 8. Documentation
 
