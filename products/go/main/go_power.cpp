@@ -99,9 +99,12 @@ PowerSnapshot PowerService::poll_bms() {
     // BQ27427 TRM §5.5 Flags() bit positions (low byte first, then high):
     //   bit 0 = DSG (discharging)
     //   bit 1 = SOCF, bit 2 = SOC1, bit 3 = BAT_DET
-    //   bit 4 = CFGUPMODE  (NOT charging — this was the previous bug)
+    //   bit 4 = CFGUPMODE (gauge is in CONFIG UPDATE mode — NOT a charging bit;
+    //               a previous bug misread this bit as "charging")
     //   bit 5 = ITPOR, bit 7 = OCVTAKEN
-    //   bit 8 = CHG (charging)
+    //   bit 8 = CHG ((fast) charging ALLOWED — cell not full; a charger hint,
+    //               NOT a measurement that current is flowing in.  Tracks ~!FC,
+    //               can be set while DSG=1.  Use DSG for current direction.)
     //   bit 9 = FC  (Full Charge)
     bool fc() const { return flags_ok && (flags & (1u << 9)); }
     bool chg() const { return flags_ok && (flags & (1u << 8)); }
