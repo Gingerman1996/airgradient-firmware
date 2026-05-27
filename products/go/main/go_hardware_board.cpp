@@ -205,6 +205,17 @@ void GoHardwareBoard::init_bms() {
       }
     }
 
+    // Ensure the 4.2 V chemistry profile BEFORE configuring the cell.  The
+    // chip defaults to the 4.35 V profile (Chem ID 0x3230); with the charger
+    // topping out at 4.20 V (charge_voltage_mv above) that profile never
+    // reaches its Taper Voltage, so Full-Charge never latches and SOC sticks
+    // ~93 %.  Idempotent — only switches (and resets learning) when wrong.
+    // Runs first so the cell config below is (re)applied on the correct
+    // chemistry after any switch.
+    if (!_fuel_gauge->select_chemistry_4v2()) {
+      AG_LOGW(TAG, "BQ27427: failed to select 4.2 V chemistry profile");
+    }
+
     // Configure the BQ27427 for the AGo cell.  All four fields written
     // atomically in a single CFGUPDATE session.  Idempotent — if every
     // field already matches, no CFGUPDATE is entered (preserves any

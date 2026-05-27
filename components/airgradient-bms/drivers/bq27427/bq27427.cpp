@@ -27,10 +27,22 @@ constexpr uint8_t CMD_REMAIN_CAP = 0x2A;        // Filtered
 constexpr uint8_t CMD_FULL_CHARGE_CAP = 0x2E;   // Filtered
 
 // Control() subcommands (TRM §4).
+constexpr uint16_t CTRL_CONTROL_STATUS = 0x0000;
 constexpr uint16_t CTRL_DEVICE_TYPE = 0x0001;
+constexpr uint16_t CTRL_CHEM_ID = 0x0008;
 constexpr uint16_t CTRL_SET_CFGUPDATE = 0x0013;
+constexpr uint16_t CTRL_CHEM_B = 0x0031; // selects Chem ID 1202 (4.2 V) — TRM p7/§5.1.15
 constexpr uint16_t CTRL_RESET = 0x0041;
 constexpr uint16_t CTRL_SOFT_RESET = 0x0042;
+
+// Chemistry profile IDs returned by Control(CHEM_ID) (TRM p7).  The chip
+// defaults to 0x3230 (4.35 V); this board's cell charges to 4.20 V, so we
+// need the 4.2 V profile.  Confirm these against the first on-device read.
+constexpr uint16_t CHEM_ID_4V2 = 0x1202;
+
+// CONTROL_STATUS low-byte bit 0 = CHEMCHANGE — set when a chemistry change
+// has been requested/accepted (TRM §5.1.1).
+constexpr uint16_t CONTROL_STATUS_CHEMCHANGE = (1u << 0);
 // Per TRM §7.1.3, UNSEAL is performed by writing the unseal key (`0x8000`)
 // to Control() twice.  Both halves of the BQ27427 unseal key are identical.
 constexpr uint16_t CTRL_UNSEAL_KEY = 0x8000;
@@ -44,10 +56,15 @@ constexpr uint8_t CMD_BLOCK_DATA_CONTROL = 0x61;
 
 // Subclass / offsets in Data Memory (TRM §7.4.2.3.5–7.4.2.3.10).
 constexpr uint8_t SUBCLASS_STATE = 0x52;        // 82 decimal
+constexpr uint8_t OFFSET_QMAX_CELL0 = 0;        // bytes 0/1 (TRM §7.4.2.3.1)
 constexpr uint8_t OFFSET_DESIGN_CAPACITY = 6;   // bytes 6/7 within block 0
 constexpr uint8_t OFFSET_DESIGN_ENERGY = 8;     // bytes 8/9
 constexpr uint8_t OFFSET_TERMINATE_VOLTAGE = 10; // bytes 10/11
 constexpr uint8_t OFFSET_SLEEP_CURRENT = 23;    // bytes 23/24
+
+// Ra (impedance) table — 15 contiguous int16 values, MSB-first, in their own
+// subclass with no header word (TRM §7.4.3, p48).
+constexpr uint8_t SUBCLASS_RA0_RAM = 0x59;      // 89 decimal
 
 // Flags() bit 4 = CFGUPDATE mode active.
 constexpr uint16_t FLAG_CFGUPDATE = (1u << 4);
@@ -327,6 +344,127 @@ bool BQ27427::read_design_capacity_mah(uint16_t &out) {
   }
   out = (static_cast<uint16_t>(buf[OFFSET_DESIGN_CAPACITY]) << 8) |
         buf[OFFSET_DESIGN_CAPACITY + 1];
+  return true;
+}
+
+bool BQ27427::read_qmax_cell0(uint16_t &raw_out) {
+  // Pure read — no CFGUPDATE.  Qmax Cell 0 is the first word of the State
+  // subclass block (TRM §7.4.2.3.1, p43).  Same constraint as
+  // read_design_capacity_mah: the block read must START at 0x40 so the chip
+  // fills its buffer from Data Memory; we then pick offsets 0/1 (MSB-first).
+  if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  uint8_t buf[8] = {};
+  if (!_read_block(CMD_BLOCK_DATA_BASE, buf, sizeof(buf))) {
+    return false;
+  }
+  raw_out = (static_cast<uint16_t>(buf[OFFSET_QMAX_CELL0]) << 8) |
+            buf[OFFSET_QMAX_CELL0 + 1];
+  return true;
+}
+
+bool BQ27427::read_ra_table(int16_t out[RA_TABLE_SIZE]) {
+  // Pure read — no CFGUPDATE.  The 15 Ra grid values live in their own
+  // subclass (Ra0 RAM, 0x59) as contiguous MSB-first int16 at offsets 0..29
+  // with no header word, all within block 0 (TRM §7.4.3, p48).  Block
+  // transfers are UNSEALED-only (TRM §7.1.1–7.1.2, p29) — no mode change.
+  if (out == nullptr) {
+    return false;
+  }
+  if (!_select_data_block(SUBCLASS_RA0_RAM, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  uint8_t buf[RA_TABLE_SIZE * 2] = {};
+  if (!_read_block(CMD_BLOCK_DATA_BASE, buf, sizeof(buf))) {
+    return false;
+  }
+  for (int i = 0; i < RA_TABLE_SIZE; ++i) {
+    out[i] = static_cast<int16_t>((static_cast<uint16_t>(buf[i * 2]) << 8) |
+                                  buf[i * 2 + 1]);
+  }
+  return true;
+}
+
+bool BQ27427::read_chem_id(uint16_t &out) {
+  // Control(CHEM_ID) returns the active 16-bit chemistry profile ID (TRM
+  // §5.1.15 / p7).  Pure read — no CFGUPDATE.
+  return control_subcommand(CTRL_CHEM_ID, out);
+}
+
+bool BQ27427::select_chemistry_4v2() {
+  if (_dev == nullptr) {
+    return false;
+  }
+
+  // Idempotent: only switch when the active profile is not already 4.2 V, so
+  // we never enter CFGUPDATE (and never wipe learning) on a correctly-
+  // configured chip.  Mirrors set_design_capacity_mah / configure_cell.
+  uint16_t chem = 0;
+  if (!read_chem_id(chem)) {
+    ESP_LOGW(TAG, "Chem ID read failed — cannot verify/select chemistry");
+    return false;
+  }
+  if (chem == CHEM_ID_4V2) {
+    ESP_LOGI(TAG, "Chem ID already 0x%04X (4.2 V profile) — no change", chem);
+    return true;
+  }
+  ESP_LOGW(TAG, "Chem ID is 0x%04X (not 4.2 V) — switching to CHEM_B (0x%04X). "
+                "This RESETS Impedance-Track learning (Qmax/Ra cleared).",
+           chem, CHEM_ID_4V2);
+
+  // UNSEAL — chemistry selection is an UNSEALED operation; no-op if already
+  // unsealed.
+  if (!_unseal()) {
+    return false;
+  }
+
+  // Enter CFGUPDATE (TRM p18 §4.2): CHEM_A/B/C are only honoured in this mode.
+  if (!_write_word(CMD_CONTROL, CTRL_SET_CFGUPDATE)) {
+    return false;
+  }
+  if (!_wait_cfgupdate_flag(true, 2000)) {
+    ESP_LOGW(TAG, "Could not enter CFGUPDATE — aborting chemistry switch");
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(1100)); // TRM: allow the chip to settle in CFGUPDATE
+
+  // Select CHEM_B → Chem ID 1202 (4.2 V).
+  if (!_write_word(CMD_CONTROL, CTRL_CHEM_B)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(1100)); // let the profile load before SOFT_RESET
+
+  // SOFT_RESET exits CFGUPDATE and re-initialises IT with the new chemistry.
+  if (!_write_word(CMD_CONTROL, CTRL_SOFT_RESET)) {
+    return false;
+  }
+  if (!_wait_cfgupdate_flag(false, 2000)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(50)); // chip needs time after SOFT_RESET
+
+  uint16_t status = 0;
+  if (control_subcommand(CTRL_CONTROL_STATUS, status)) {
+    ESP_LOGI(TAG, "CONTROL_STATUS=0x%04X (CHEMCHANGE=%d)", status,
+             (status & CONTROL_STATUS_CHEMCHANGE) ? 1 : 0);
+  }
+
+  // Verify the switch stuck — don't claim success otherwise.
+  uint16_t verify = 0;
+  if (!read_chem_id(verify)) {
+    ESP_LOGE(TAG, "Chem ID readback FAILED after switch");
+    return false;
+  }
+  if (verify != CHEM_ID_4V2) {
+    ESP_LOGE(TAG, "Chemistry switch did NOT stick — wanted 0x%04X, readback 0x%04X",
+             CHEM_ID_4V2, verify);
+    return false;
+  }
+  ESP_LOGI(TAG, "Chemistry switched to 0x%04X (4.2 V) — learning reset, re-learn required",
+           verify);
   return true;
 }
 

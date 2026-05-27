@@ -327,6 +327,15 @@ PowerSnapshot PowerService::poll_bms() {
             fg.v_ok ? "" : "?", fg.v_mv, ocv_zone);
   }
 
+  // One-shot dump of the learned Impedance-Track golden values (Qmax Cell 0 +
+  // Ra grid) for sanity-checking before the gauge is SEALed.  Pure Data Memory
+  // reads — no CFGUPDATE, so this never perturbs learning.  Fires once per
+  // boot to stay off the 10 s poll cadence.
+  if (fg.present && !_fg_learned_dumped) {
+    log_fg_learned_dump();
+    _fg_learned_dumped = true;
+  }
+
   // Regulation flags only when something is actually active — these are
   // important when they happen but pure noise when they aren't.
   const auto &cs = status.charger_status;
@@ -356,6 +365,62 @@ PowerSnapshot PowerService::poll_bms() {
   }
 
   return status;
+}
+
+void PowerService::log_fg_learned_dump() {
+  if (_fuel_gauge == nullptr) {
+    return;
+  }
+
+  // Qmax Cell 0 is a fixed-point value; convert to mAh with the learned
+  // Design Capacity (TRM §7.4.2.3.1): Qmax(mAh) = raw * DC / 2^14.
+  uint16_t qmax_raw = 0;
+  uint16_t dc_mah = 0;
+  const bool qmax_ok = _fuel_gauge->read_qmax_cell0(qmax_raw);
+  const bool dc_ok = _fuel_gauge->read_design_capacity_mah(dc_mah);
+  if (qmax_ok && dc_ok) {
+    const uint32_t qmax_mah = (static_cast<uint32_t>(qmax_raw) * dc_mah) / 16384u;
+    AG_LOGI(TAG, "FG-DUMP Qmax Cell 0 raw=%u -> %" PRIu32 "mAh (DC=%umAh)", qmax_raw,
+            qmax_mah, dc_mah);
+  } else {
+    AG_LOGW(TAG, "FG-DUMP Qmax read failed (qmax_ok=%d dc_ok=%d)", qmax_ok, dc_ok);
+  }
+
+  int16_t ra[BQ27427::RA_TABLE_SIZE] = {};
+  if (!_fuel_gauge->read_ra_table(ra)) {
+    AG_LOGW(TAG, "FG-DUMP Ra table read failed");
+    return;
+  }
+  AG_LOGI(TAG, "FG-DUMP Ra[0..14] = %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+          ra[0], ra[1], ra[2], ra[3], ra[4], ra[5], ra[6], ra[7], ra[8], ra[9], ra[10],
+          ra[11], ra[12], ra[13], ra[14]);
+
+  // Sanity verdict (TRM §7.4.3): a healthy grid has no non-positive entries
+  // and smooth grid-to-grid transitions — flag the largest adjacent jump.
+  int bad_count = 0;
+  int max_jump = 0;
+  int max_jump_idx = 0;
+  for (int i = 0; i < BQ27427::RA_TABLE_SIZE; ++i) {
+    if (ra[i] <= 0) {
+      ++bad_count;
+    }
+    if (i > 0) {
+      int jump = ra[i] - ra[i - 1];
+      if (jump < 0) {
+        jump = -jump;
+      }
+      if (jump > max_jump) {
+        max_jump = jump;
+        max_jump_idx = i;
+      }
+    }
+  }
+  if (bad_count > 0) {
+    AG_LOGW(TAG, "FG-DUMP Ra SANITY: %d non-positive value(s) -- table looks bad", bad_count);
+  } else {
+    AG_LOGI(TAG, "FG-DUMP Ra SANITY: ok (no non-positive), max grid jump=%d at Ra[%d]->Ra[%d]",
+            max_jump, max_jump_idx - 1, max_jump_idx);
+  }
 }
 
 bool PowerService::poll_charging_status(BmsChargingState &state) {

@@ -101,6 +101,49 @@ public:
   /// @return true on success.
   bool read_design_capacity_mah(uint16_t &out);
 
+  /// Number of grid points in the learned Ra (impedance) table.
+  /// TRM §7.4.3 (p48): the Ra Table class has 15 values.
+  static constexpr int RA_TABLE_SIZE = 15;
+
+  /// Read the learned Qmax Cell 0 value from Data Memory (State subclass 0x52,
+  /// offset 0/1; TRM §7.4.2.3.1, p43).  The stored value is fixed-point, NOT
+  /// mAh — convert with `Qmax(mAh) = raw × Design Capacity / 2^14` (factory
+  /// default raw = 16384 = 1× Design Capacity).  Pure read: a Data Memory
+  /// block transfer in UNSEALED mode (TRM §7.1.1–7.1.2, p29) — does NOT enter
+  /// CFGUPDATE and does NOT perturb learned state.
+  /// @return true on success.
+  bool read_qmax_cell0(uint16_t &raw_out);
+
+  /// Read the learned Ra impedance grid — RA_TABLE_SIZE signed 16-bit values
+  /// from the Ra0 RAM subclass (0x59, offsets 0..29; TRM §7.4.3, p48).  Values
+  /// are internal units (mΩ normalized to 25 °C, scaled by Design Capacity);
+  /// a healthy table has no non-positive entries and smooth grid-to-grid
+  /// transitions.  Pure UNSEALED block read (TRM §7.1.1–7.1.2, p29) — no
+  /// CFGUPDATE, no perturbation of learned state.
+  /// @param out  Caller-provided array of at least RA_TABLE_SIZE elements.
+  /// @return true on success.
+  bool read_ra_table(int16_t out[RA_TABLE_SIZE]);
+
+  /// Read the active chemistry profile ID via Control(CHEM_ID) (TRM §5.1.15,
+  /// p7).  Default is 0x3230 (4.35 V); the 4.2 V profile is 0x1202.  Pure
+  /// read — does not enter CFGUPDATE.
+  /// @return true on success.
+  bool read_chem_id(uint16_t &out);
+
+  /// Ensure the gauge is on the 4.2 V chemistry profile (Chem ID 1202, via
+  /// CHEM_B).  The chip defaults to the 4.35 V profile (0x3230); on a board
+  /// whose charger tops the cell at 4.20 V that profile never reaches its
+  /// Taper Voltage, so Full-Charge never latches and SOC saturates below
+  /// 100 % (TRM p7/p18/p46/p49).
+  ///
+  /// Idempotent: when the active profile is already 4.2 V this is a no-op and
+  /// does NOT enter CFGUPDATE, so learned state is preserved.  When a switch
+  /// is needed it runs UNSEAL → CFGUPDATE → CHEM_B → SOFT_RESET, which
+  /// **resets Impedance-Track learning** (Qmax/Ra are chemistry-specific) — so
+  /// any learning cycle must be (re)run afterwards.
+  /// @return true on success or when no change was needed.
+  bool select_chemistry_4v2();
+
   /// Write a new Design Capacity (mAh) to data memory if the current value
   /// differs from `mah`.  Drives the full CFGUPDATE → write block → checksum
   /// → SOFT_RESET sequence (TRM §4.1).  Idempotent: a no-op when already

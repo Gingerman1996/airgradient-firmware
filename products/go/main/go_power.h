@@ -403,6 +403,18 @@ private:
   /// Higher precedence than _charge_cutoff_at_full; lower than thermal cutoff.
   bool _manual_charge_disabled = false;
 
+  /// Set once log_fg_learned_dump() has emitted its one-shot FG-DUMP line, so
+  /// the dump fires only on the first poll_bms() that sees a gauge present and
+  /// doesn't repeat on the 10 s poll cadence.
+  bool _fg_learned_dumped = false;
+
+  /// One-shot bench diagnostic: read the gauge's learned Qmax Cell 0 and Ra
+  /// grid via pure Data Memory reads and log them (tag "FG-DUMP") with a
+  /// sanity verdict, so the learned golden values can be eyeballed before the
+  /// gauge is SEALed.  No-op when no fuel gauge is attached.  Does not enter
+  /// CFGUPDATE — safe to call without perturbing learned state.
+  void log_fg_learned_dump();
+
   /// Configure timer and GPIO wake sources before entering sleep.
   /// Wrapped in #ifndef TEST_HOST — not callable from host test builds.
   void configure_wake_sources(uint32_t timer_ms);
