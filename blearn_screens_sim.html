@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AirGradient Go — Battery Learning (blearn) screen simulation</title>
+<style>
+  :root{
+    --bg:#13161a; --panel:#1c2128; --line:#2b323c; --txt:#d7dde5; --dim:#8b97a6;
+    --accent:#4ea1ff; --ok:#39d98a; --bad:#ff5d5d; --amber:#ffb02e;
+    --epd:#e9e7df;            /* e-paper "white" (slightly warm grey) */
+    --epd-ink:#1b1b18;        /* e-paper ink */
+    --scale:2.4;              /* 128x250 -> ~307x600 */
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--txt);padding:18px}
+  h1{font-size:17px;margin:0 0 2px}
+  .sub{color:var(--dim);font-size:12.5px;margin-bottom:16px}
+  .stage{display:grid;grid-template-columns:auto 1fr;gap:26px;align-items:start;max-width:1080px}
+  /* ---- device mock ---- */
+  .device{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .bezel{background:#0c0e11;border:1px solid #000;border-radius:14px;padding:14px 14px 18px;
+         box-shadow:0 8px 30px rgba(0,0,0,.5)}
+  .epd{width:calc(128px*var(--scale));height:calc(250px*var(--scale));background:var(--epd);
+       color:var(--epd-ink);position:relative;overflow:hidden;border-radius:3px;
+       font-family:"DejaVu Sans Condensed","Helvetica Neue",Arial,sans-serif;
+       -webkit-font-smoothing:none;transition:filter .12s}
+  .epd.refresh{filter:invert(1)}
+  .epd.off{background:#2a2c2a;color:#555}
+  /* status bar */
+  .bar{position:absolute;top:0;left:0;right:0;height:calc(17px*var(--scale));
+       display:flex;align-items:center;gap:6px;padding:0 calc(4px*var(--scale));
+       border-bottom:2px solid var(--epd-ink);font-size:calc(8px*var(--scale));font-weight:600}
+  .batt{display:inline-flex;align-items:center;gap:3px}
+  .battbox{width:calc(16px*var(--scale));height:calc(8px*var(--scale));border:2px solid var(--epd-ink);
+           position:relative;border-radius:1px}
+  .battbox::after{content:"";position:absolute;right:calc(-3px*var(--scale));top:25%;height:50%;
+                  width:calc(2px*var(--scale));background:var(--epd-ink)}
+  .battfill{position:absolute;left:1px;top:1px;bottom:1px;background:var(--epd-ink)}
+  .chip{margin-left:auto;border:2px solid var(--epd-ink);border-radius:3px;
+        padding:0 calc(3px*var(--scale));font-size:calc(7px*var(--scale));line-height:1.6}
+  .bolt{font-size:calc(9px*var(--scale))}
+  /* body */
+  .body{position:absolute;left:0;right:0;top:calc(17px*var(--scale));bottom:0;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+        padding:calc(6px*var(--scale)) calc(5px*var(--scale));text-align:center}
+  .big{font-size:calc(15px*var(--scale));font-weight:700;letter-spacing:.5px;line-height:1.15}
+  .huge{font-size:calc(34px*var(--scale));font-weight:800;line-height:1}
+  .med{font-size:calc(10px*var(--scale));line-height:1.35}
+  .small{font-size:calc(8px*var(--scale));color:#3a3a35;line-height:1.4}
+  .rows{margin-top:calc(8px*var(--scale));width:100%;font-size:calc(9px*var(--scale))}
+  .rows div{display:flex;justify-content:space-between;border-bottom:1px dotted #aaa6;padding:calc(1px*var(--scale)) 0}
+  .logo{position:absolute;bottom:calc(8px*var(--scale));left:0;right:0;text-align:center;
+        font-size:calc(9px*var(--scale));font-weight:700;letter-spacing:.5px}
+  .spin{display:inline-block;animation:spin 1.1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .blinktxt{animation:bt .7s steps(1) infinite}
+  @keyframes bt{50%{opacity:.15}}
+  /* LED + plug */
+  .ind{display:flex;gap:26px;align-items:center}
+  .led{display:flex;flex-direction:column;align-items:center;gap:5px;font-size:11px;color:var(--dim)}
+  .dot{width:22px;height:22px;border-radius:50%;background:#3a3f47;border:1px solid #000;
+       box-shadow:inset 0 0 4px rgba(0,0,0,.6)}
+  .dot.work{background:#eef2f7;animation:pulse 1.6s ease-in-out infinite;box-shadow:0 0 10px #eef2f7aa}
+  .dot.unplug{background:var(--amber);animation:fastblink .55s steps(1) infinite;box-shadow:0 0 12px var(--amber)}
+  .dot.ok{background:var(--ok);box-shadow:0 0 14px var(--ok)}
+  .dot.bad{background:var(--bad);box-shadow:0 0 14px var(--bad)}
+  @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+  @keyframes fastblink{50%{opacity:.1}}
+  .plug{font-size:11px;color:var(--dim);text-align:center}
+  .plug b{display:block;font-size:18px;color:var(--txt)}
+  .plug.in b{color:var(--ok)} .plug.out b{color:var(--amber)}
+  /* ---- info panel ---- */
+  .info{min-width:380px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+  .card h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:4px 10px;font-size:13px}
+  .kv b{color:#fff;font-weight:600}
+  .pill{display:inline-block;padding:1px 9px;border-radius:20px;font-size:12px;font-weight:600}
+  .pill.idle{background:#333a44;color:#cdd}
+  .pill.run{background:#22405e;color:#bfe0ff}
+  .pill.done{background:#1f4d39;color:#aef3cf}
+  .pill.fail{background:#542525;color:#ffc4c4}
+  .act{font-size:14.5px;font-weight:600;color:var(--accent)}
+  .act.human{color:var(--amber)}
+  .note{font-size:12.5px;color:var(--dim);border-left:3px solid var(--line);padding-left:10px}
+  .flags span{display:inline-block;margin:2px 6px 2px 0;font-size:12px;padding:1px 7px;border-radius:4px;background:#2a313b}
+  .flags span.on{background:#1f4d39;color:#aef3cf}
+  .flags span.off{background:#3a2530;color:#ffc4c4}
+  /* ---- controls ---- */
+  .ctrl{max-width:1080px;margin-top:18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  button{background:#283039;color:var(--txt);border:1px solid var(--line);border-radius:8px;
+         padding:8px 14px;font-size:14px;cursor:pointer}
+  button:hover{background:#313b46}
+  button.primary{background:var(--accent);color:#06121f;border-color:var(--accent);font-weight:600}
+  button:disabled{opacity:.4;cursor:default}
+  .steps{display:flex;gap:5px;flex-wrap:wrap;margin-top:14px;max-width:1080px}
+  .pip{font-size:11px;color:var(--dim);padding:3px 8px;border:1px solid var(--line);border-radius:14px;cursor:pointer}
+  .pip.active{background:var(--accent);color:#06121f;border-color:var(--accent);font-weight:600}
+  .pip.human{border-color:var(--amber);color:var(--amber)}
+  .toggle{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim)}
+</style>
+</head>
+<body>
+  <h1>AirGradient Go — Battery Learning (blearn) screen simulation</h1>
+  <div class="sub">SSD1680 e-paper, 128×250 px, monochrome · representative mock (fonts approximated) · companion to <code>blearn_two_cycle_design.md</code></div>
+
+  <div class="stage">
+    <!-- device -->
+    <div class="device">
+      <div class="bezel">
+        <div class="epd" id="epd"><!-- rendered --></div>
+      </div>
+      <div class="ind">
+        <div class="led"><div class="dot" id="led"></div><span id="ledlbl">LED</span></div>
+        <div class="plug" id="plug"><b id="plugicon">⎓</b><span id="pluglbl">charger</span></div>
+      </div>
+    </div>
+
+    <!-- info -->
+    <div class="info">
+      <div class="card">
+        <h3>Firmware state machine</h3>
+        <div class="kv">
+          <span>Stage</span><b><span class="pill" id="pill"></span></b>
+          <span>Cycle</span><b id="cycle"></b>
+          <span>Operator action</span><b class="act" id="action"></b>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Persisted in flash (NVS — survives power-off)</h3>
+        <div class="kv">
+          <span>blearn_stage</span><b id="nvs_stage"></b>
+          <span>blearn_cycle</span><b id="nvs_cycle"></b>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Fuel-gauge status (BQ27427)</h3>
+        <div class="flags" id="fg"></div>
+      </div>
+      <div class="card">
+        <h3>What's happening</h3>
+        <div class="note" id="note"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ctrl">
+    <button id="prev">◀ Prev</button>
+    <button id="next" class="primary">Next ▶</button>
+    <button id="auto">▶ Auto-play</button>
+    <span id="counter" style="color:var(--dim)"></span>
+    <label class="toggle"><input type="checkbox" id="outcome"> simulate FAIL outcome</label>
+  </div>
+  <div class="steps" id="pips"></div>
+
+<script>
+/* Each step = one moment in the per-unit production learning run.
+   The only HUMAN actions are: press Start, unplug on cue, re-plug after power-off. */
+const FG = (itpor,qmax,res,extra)=>({itpor,qmax,res,...extra});
+
+const baseFlags = {fc:false,chg:false,dsg:false,ocv:false,itpor:false,qmax:false,res:false,batdet:true};
+function flags(o){return {...baseFlags,...o};}
+
+const steps = [
+ {
+   id:"Idle", pill:"idle", stage:"Idle", cycle:"—",
+   nvs_stage:"Idle", nvs_cycle:"0",
+   action:{t:"Press ● Start battery learning (admin menu)",human:true},
+   led:"off", plug:"in",
+   fg:flags({chg:true}),
+   note:"Fresh unit on the line. Firmware has already written Design Capacity / Chem ID / Terminate V and cleared ITPOR. Fast-learning is armed (QMAX_UP/RES_UP=0). Operator presses one button to begin.",
+   screen:{mode:"start"}
+ },
+ {
+   id:"C1 Charge", pill:"run", stage:"Charge", cycle:"1 / 2",
+   nvs_stage:"Charge", nvs_cycle:"1",
+   action:{t:"Nothing — keep charger plugged"},
+   led:"work", plug:"in",
+   fg:flags({chg:true}),
+   note:"Cycle 1. Charging at high current to Full Charge. Update Status bit0+bit1 were set at start so Qmax/Ra can move freely this run. Auto-advances when the gauge reports FC=1.",
+   screen:{mode:"charge",pct:62,v:"4.05",cyc:"1/2"}
+ },
+ {
+   id:"C1 Rest", pill:"run", stage:"Rest", cycle:"1 / 2",
+   nvs_stage:"Charge", nvs_cycle:"1",
+   action:{t:"Nothing — do NOT unplug yet"},
+   led:"work", plug:"in",
+   fg:flags({fc:true,chg:true}),
+   note:"Full. Charging disabled and load quieted so the cell relaxes; the gauge captures the top open-circuit voltage (OCV1). Waits for OCVTAKEN + rest timeout.",
+   screen:{mode:"rest",pct:100,v:"4.18",cyc:"1/2",sub:"Capturing OCV1"}
+ },
+ {
+   id:"C1 Unplug", pill:"run", stage:"Discharge", cycle:"1 / 2",
+   nvs_stage:"Discharge", nvs_cycle:"1",
+   action:{t:"UNPLUG the charger now",human:true},
+   led:"unplug", plug:"in",
+   fg:flags({fc:true,ocv:true}),
+   note:"OCV1 captured. The device blinks the LED and shows the unplug prompt. Operator unplugs the charger to begin the real discharge.",
+   screen:{mode:"unplug",cyc:"1/2"}
+ },
+ {
+   id:"C1 Discharge", pill:"run", stage:"Discharge", cycle:"1 / 2",
+   nvs_stage:"Discharge", nvs_cycle:"1",
+   action:{t:"Nothing — leave it running on battery"},
+   led:"work", plug:"out",
+   fg:flags({dsg:true}),
+   note:"On battery. Load held high enough to keep the gauge in DISCHARGE (> Dsg threshold, near room temp) so it learns the Ra grid + Qmax while the cell drains toward the EDV cutoff.",
+   screen:{mode:"discharge",pct:47,v:"3.61",i:"-280",t:"29",cyc:"1/2"}
+ },
+ {
+   id:"C1 EDV→off", pill:"done", stage:"CycleDone", cycle:"1 / 2",
+   nvs_stage:"CycleDone", nvs_cycle:"1",
+   action:{t:"Nothing — device powers itself off"},
+   led:"off", plug:"out",
+   fg:flags({dsg:true}),
+   note:"Cell hit the safe EDV cutoff. Firmware writes 'cycle 1 done' to flash and COMMITS it BEFORE ship mode (else it keeps discharging and retries). Shows 'Discharge complete' then enters ship mode.",
+   screen:{mode:"shipmode"}
+ },
+ {
+   id:"OFF", pill:"done", stage:"(powered off)", cycle:"1 / 2",
+   nvs_stage:"CycleDone", nvs_cycle:"1",
+   action:{t:"Plug the charger back in",human:true},
+   led:"off", plug:"out",
+   fg:flags({}),
+   note:"Device is OFF (BATFET open). RAM is gone, but flash kept 'CycleDone' and the gauge kept its learned values (ITPOR still 0). Operator re-plugs to wake it.",
+   screen:{mode:"off"}
+ },
+ {
+   id:"Boot→C2", pill:"run", stage:"Charge", cycle:"2 / 2",
+   nvs_stage:"Charge", nvs_cycle:"2",
+   action:{t:"Nothing — keep charger plugged"},
+   led:"work", plug:"in",
+   fg:flags({chg:true,qmax:true}),
+   note:"Cold boot. Resume logic reads flash ('CycleDone' + cycle 1) × gauge (ITPOR=0, QMAX_UP=1 → learning intact) and AUTOMATICALLY continues into cycle 2. No operator input.",
+   screen:{mode:"charge",pct:58,v:"4.02",cyc:"2/2",resume:true}
+ },
+ {
+   id:"C2 Rest", pill:"run", stage:"Rest", cycle:"2 / 2",
+   nvs_stage:"Charge", nvs_cycle:"2",
+   action:{t:"Nothing — do NOT unplug yet"},
+   led:"work", plug:"in",
+   fg:flags({fc:true,chg:true,qmax:true}),
+   note:"Cycle 2 full charge + relax for a fresh OCV1. Same as cycle 1.",
+   screen:{mode:"rest",pct:100,v:"4.19",cyc:"2/2",sub:"Capturing OCV1"}
+ },
+ {
+   id:"C2 Unplug", pill:"run", stage:"Discharge", cycle:"2 / 2",
+   nvs_stage:"Discharge", nvs_cycle:"2",
+   action:{t:"UNPLUG the charger now",human:true},
+   led:"unplug", plug:"in",
+   fg:flags({fc:true,ocv:true,qmax:true}),
+   note:"Second unplug cue. Operator unplugs to run the cycle-2 discharge.",
+   screen:{mode:"unplug",cyc:"2/2"}
+ },
+ {
+   id:"C2 Discharge", pill:"run", stage:"Discharge", cycle:"2 / 2",
+   nvs_stage:"Discharge", nvs_cycle:"2",
+   action:{t:"Nothing — leave it running on battery"},
+   led:"work", plug:"out",
+   fg:flags({dsg:true,qmax:true,res:true}),
+   note:"Cycle-2 discharge refines the mid/high-SOC Ra grid points that cycle 1 left at defaults.",
+   screen:{mode:"discharge",pct:44,v:"3.58",i:"-285",t:"30",cyc:"2/2"}
+ },
+ {
+   id:"C2 EDV→off", pill:"done", stage:"CycleDone", cycle:"2 / 2",
+   nvs_stage:"CycleDone", nvs_cycle:"2",
+   action:{t:"Nothing — device powers itself off"},
+   led:"off", plug:"out",
+   fg:flags({dsg:true,qmax:true,res:true}),
+   note:"Cycle 2 EDV. Writes 'cycles done' (cycle 2 = target) to flash + commit, then ship mode.",
+   screen:{mode:"shipmode"}
+ },
+ {
+   id:"OFF 2", pill:"done", stage:"(powered off)", cycle:"2 / 2",
+   nvs_stage:"CycleDone", nvs_cycle:"2",
+   action:{t:"Plug the charger back in",human:true},
+   led:"off", plug:"out",
+   fg:flags({qmax:true,res:true}),
+   note:"Final re-plug. On boot the device will verify the learned values.",
+   screen:{mode:"off"}
+ },
+ {
+   id:"Verify", pill:"run", stage:"Verify", cycle:"2 / 2",
+   nvs_stage:"Verify", nvs_cycle:"2",
+   action:{t:"Nothing — reading back learned values"},
+   led:"work", plug:"in",
+   fg:flags({chg:true,qmax:true,res:true}),
+   note:"Reads Qmax Cell 0 + the 15 Ra values. Checks: ITPOR=0, QMAX_UP=1, Qmax sane, Ra all >0 and moved off ROM defaults across the WHOLE grid (RES_UP alone is not enough).",
+   screen:{mode:"verify"}
+ },
+ /* final outcome is swapped by the FAIL toggle */
+];
+
+const passStep = {
+   id:"Complete", pill:"done", stage:"Complete", cycle:"done",
+   nvs_stage:"Complete", nvs_cycle:"2",
+   action:{t:"PASS → ship the unit ✓"},
+   led:"ok", plug:"in",
+   fg:flags({chg:true,qmax:true,res:true}),
+   note:"All criteria pass. Update Status bit0+bit1 cleared so the shipped unit uses normal bounded field-refinement. Records 'complete' — every future boot goes straight to normal operation.",
+   screen:{mode:"result",pass:true,qmax:"2310 mAh"}
+};
+const failStep = {
+   id:"Failed", pill:"fail", stage:"Failed", cycle:"2 / 2",
+   nvs_stage:"Failed", nvs_cycle:"2",
+   action:{t:"FAIL → reject / re-run on the line"},
+   led:"bad", plug:"in",
+   fg:flags({chg:true,qmax:true,res:true}),
+   note:"Verification failed (e.g. Ra grid still near ROM defaults → discharge load was too low). The unit is rejected rather than shipped silently mis-gauged. Operator investigates / re-arms.",
+   screen:{mode:"result",pass:false,reason:"Ra grid not learned"}
+};
+
+/* ---- render ---- */
+const epd=document.getElementById('epd');
+function battSvg(pct,charging){
+  const f=Math.max(0,Math.min(100,pct));
+  return `<span class="batt"><span class="battbox"><span class="battfill" style="width:${f*0.86}%"></span></span>${charging?'<span class="bolt">⚡</span>':''}<span>${pct}%</span></span>`;
+}
+function bar(pct,charging,cyc){
+  return `<div class="bar">${battSvg(pct,charging)}<span class="chip">LEARN${cyc?' '+cyc:''}</span></div>`;
+}
+function logo(){return `<div class="logo">AirGradient</div>`;}
+
+function renderScreen(s){
+  const m=s.mode;
+  if(m==="off"){
+    return `<div class="body"><div class="big" style="color:#666">⎓</div><div class="med" style="color:#777;margin-top:20px">Plug charger<br>to continue</div></div>`;
+  }
+  if(m==="start"){
+    return bar(100,true)+`<div class="body"><div class="big">Battery<br>Learning</div><div class="med" style="margin-top:18px">Press ● to start</div><div class="small" style="margin-top:10px">Keep charger plugged</div></div>`+logo();
+  }
+  if(m==="charge"){
+    return bar(s.pct,true,s.cyc)+`<div class="body"><div class="med">${s.resume?'Resuming…':'Charging'}</div><div class="huge" style="margin:10px 0">${s.pct}%</div><div class="med">${s.v} V</div><div class="rows"><div><span>Phase</span><span>Charge ${s.cyc}</span></div></div><div class="small" style="margin-top:14px">Keep charger plugged</div></div>`+logo();
+  }
+  if(m==="rest"){
+    return bar(s.pct,false,s.cyc)+`<div class="body"><div class="med">Resting <span class="spin">↻</span></div><div class="huge" style="margin:10px 0">${s.pct}%</div><div class="med">${s.v} V</div><div class="small" style="margin-top:12px">${s.sub}</div><div class="small" style="margin-top:8px">Do not unplug yet</div></div>`+logo();
+  }
+  if(m==="unplug"){
+    return bar(100,false,s.cyc)+`<div class="body"><div class="big blinktxt">UNPLUG<br>CHARGER</div><div class="med" style="margin-top:20px">to start discharge</div><div class="small" style="margin-top:10px">Cycle ${s.cyc}</div></div>`+logo();
+  }
+  if(m==="discharge"){
+    return bar(s.pct,false,s.cyc)+`<div class="body"><div class="med">Discharging</div><div class="huge" style="margin:8px 0">${s.pct}%</div><div class="rows"><div><span>Voltage</span><span>${s.v} V</span></div><div><span>Current</span><span>${s.i} mA</span></div><div><span>Temp</span><span>${s.t} °C</span></div><div><span>Phase</span><span>Dsg ${s.cyc}</span></div></div><div class="small" style="margin-top:10px">Running on battery</div></div>`+logo();
+  }
+  if(m==="shipmode"){
+    return bar(3,false)+`<div class="body"><div class="big">Discharge<br>complete</div><div class="med" style="margin-top:16px">Ship mode</div><div class="small" style="margin-top:10px">Re-plug to continue</div></div>`+logo();
+  }
+  if(m==="verify"){
+    return bar(60,true)+`<div class="body"><div class="big">Verifying <span class="spin">↻</span></div><div class="med" style="margin-top:16px">Reading Qmax + Ra</div></div>`+logo();
+  }
+  if(m==="result"){
+    if(s.pass){
+      return bar(60,true)+`<div class="body"><div class="huge" style="color:var(--epd-ink)">✓</div><div class="big" style="margin-top:14px">Learning<br>complete</div><div class="rows" style="margin-top:14px"><div><span>Qmax</span><span>${s.qmax}</span></div><div><span>Ra grid</span><span>OK</span></div><div><span>Result</span><span>PASS</span></div></div></div>`+logo();
+    }
+    return bar(60,true)+`<div class="body"><div class="huge" style="color:var(--epd-ink)">✕</div><div class="big" style="margin-top:14px">Learning<br>FAILED</div><div class="rows" style="margin-top:14px"><div><span>Reason</span><span>${s.reason}</span></div><div><span>Result</span><span>FAIL</span></div></div><div class="small" style="margin-top:10px">Reject / re-run</div></div>`+logo();
+  }
+  return "";
+}
+
+let i=0, timer=null;
+function effectiveSteps(){
+  const fail=document.getElementById('outcome').checked;
+  return [...steps, fail?failStep:passStep];
+}
+function render(){
+  const S=effectiveSteps(); if(i>=S.length)i=S.length-1;
+  const s=S[i];
+  // e-paper refresh flash
+  epd.classList.add('refresh');
+  setTimeout(()=>{
+    epd.className='epd'+(s.screen.mode==='off'?' off':'');
+    epd.innerHTML=renderScreen(s.screen);
+  },70);
+  setTimeout(()=>epd.classList.remove('refresh'),140);
+
+  document.getElementById('pill').className='pill '+s.pill;
+  document.getElementById('pill').textContent=s.stage;
+  document.getElementById('cycle').textContent=s.cycle;
+  const act=document.getElementById('action');
+  act.textContent=s.action.t; act.className='act'+(s.action.human?' human':'');
+  document.getElementById('nvs_stage').textContent=s.nvs_stage;
+  document.getElementById('nvs_cycle').textContent=s.nvs_cycle;
+  document.getElementById('note').textContent=s.note;
+
+  // LED
+  const led=document.getElementById('led'), ll=document.getElementById('ledlbl');
+  led.className='dot'+(s.led==='off'?'':' '+s.led);
+  ll.textContent={off:'LED off',work:'working',unplug:'UNPLUG (blink)',ok:'PASS (green)',bad:'FAIL (red)'}[s.led];
+  // plug
+  const plug=document.getElementById('plug');
+  plug.className='plug '+s.plug;
+  document.getElementById('plugicon').textContent=s.plug==='in'?'🔌':'⌁';
+  document.getElementById('pluglbl').textContent=s.plug==='in'?'charger IN':'charger OUT';
+  // FG flags
+  const f=s.fg, order=[['ITPOR','itpor',true],['QMAX_UP','qmax'],['RES_UP','res'],['FC','fc'],['CHG','chg'],['DSG','dsg'],['OCV','ocv'],['BAT_DET','batdet']];
+  document.getElementById('fg').innerHTML=order.map(([lbl,k,inv])=>{
+    const v=f[k]; const good = inv ? !v : v;
+    return `<span class="${v?(inv?'off':'on'):(inv?'on':'')}">${lbl}=${v?1:0}</span>`;
+  }).join('');
+
+  document.getElementById('prev').disabled=(i===0);
+  document.getElementById('next').disabled=(i===S.length-1);
+  document.getElementById('counter').textContent=`step ${i+1} / ${S.length}`;
+  // pips
+  document.getElementById('pips').innerHTML=S.map((st,idx)=>
+    `<span class="pip${idx===i?' active':''}${st.action.human?' human':''}" data-i="${idx}">${st.id}</span>`).join('');
+}
+function go(n){const S=effectiveSteps();i=Math.max(0,Math.min(S.length-1,n));render();}
+document.getElementById('next').onclick=()=>go(i+1);
+document.getElementById('prev').onclick=()=>go(i-1);
+document.getElementById('outcome').onchange=()=>render();
+document.getElementById('pips').onclick=e=>{const p=e.target.closest('.pip');if(p)go(+p.dataset.i);};
+const autoBtn=document.getElementById('auto');
+autoBtn.onclick=()=>{
+  if(timer){clearInterval(timer);timer=null;autoBtn.textContent='▶ Auto-play';return;}
+  autoBtn.textContent='⏸ Pause';
+  timer=setInterval(()=>{const S=effectiveSteps();if(i>=S.length-1){clearInterval(timer);timer=null;autoBtn.textContent='▶ Auto-play';return;}go(i+1);},1600);
+};
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')go(i+1);if(e.key==='ArrowLeft')go(i-1);});
+render();
+</script>
+</body>
+</html>
