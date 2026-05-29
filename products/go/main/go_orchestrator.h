@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include "blearn_controller.h"
 #include "config_store.h"
 #include "go_ble.h"
 #include "go_buzzer.h"
@@ -127,6 +128,12 @@ private:
   /// skipped, GPS in CFG-SLEEP.  Cleared when the user plugs USB back in
   /// or disables battery_learning_enabled.  Runtime-only, not persisted.
   bool _in_learning_low_power = false;
+
+  // --- Automated battery-learning FSM ---
+  /// Pure, host-tested state machine that drives the multi-cycle learning run
+  /// (design Part 2).  Owned here; driven from on_bms_status_timer() via
+  /// tick().  Its persisted state lives in _settings.blearn_* / NVS.
+  BlearnController _blearn;
 
   // --- Admin-mode entry gesture ---
   // The tap-count constant is declared here (not in the "Constants" block
@@ -251,6 +258,28 @@ private:
   /// before the BATFET opens.  Does not return on success (device powers off).
   void handle_edv_cutoff();
   void reschedule_sensor_timer(const GoSettings &previous_settings);
+
+  // --- Automated battery learning (design Part 2) ---
+  /// Drive one BlearnController::tick() against the latest power snapshot and
+  /// apply the returned action (charge/current, low-power polarity, unplug cue,
+  /// phase screen, persist).  Called from on_bms_status_timer().  Returns true
+  /// when the FSM is active (so the legacy learning-UX gating yields to it).
+  bool tick_blearn();
+
+  /// Apply one BlearnAction to the services + persistence.
+  void apply_blearn_action(const BlearnAction &action);
+
+  /// Persist the FSM's current stage/cycle/itpor via the single-key atomic
+  /// commit path.  Mirrors the values into _settings.  @return commit success.
+  bool persist_blearn_state();
+
+  /// Read the gauge's learned values and feed BlearnController::on_verify_result
+  /// (design §7).  No-op (does not enter CFGUPDATE) — pure block reads.
+  void run_blearn_verify();
+
+  /// One-shot boot resume of the learning FSM (design §6).  Runs after
+  /// load_go_settings() + one poll_bms().  Persists if the stage changed.
+  void resume_blearn_on_boot();
 
   // --- Display ---
   void update_display();

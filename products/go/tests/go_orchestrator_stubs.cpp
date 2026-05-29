@@ -40,6 +40,9 @@ SensorGroup last_groups = SensorGroup::None;
 bool co2_calibration_requested = false;
 bool prepare_requested = false;
 
+// --- PowerService blearn verify ---
+PowerService::BlearnVerifyReadout blearn_verify_to_return{};
+
 // --- GpsService ---
 bool gps_started = false;
 bool gps_stopped = false;
@@ -233,6 +236,8 @@ void SensorProducer::request_co2_calibration() { test_spy::co2_calibration_reque
 
 void SensorProducer::request_prepare() { test_spy::prepare_requested = true; }
 
+void SensorProducer::request_low_power(bool /*low_power*/) {}
+
 // ============================================================================
 // GpsService stubs
 // ============================================================================
@@ -266,6 +271,10 @@ void GpsService::set_aiding_data(const GpsAidingData &data) {
   test_spy::gps_aiding_set = true;
   test_spy::gps_aiding_data = data;
 }
+
+void GpsService::sleep_for_ms(uint32_t /*duration_ms*/) {}
+
+void GpsService::wake_from_sleep() {}
 
 GpsData gps_read_once(GpsDriver & /*driver*/, int /*baud_rate*/, uint32_t /*timeout_ms*/,
                       const volatile bool & /*abort*/) {
@@ -338,6 +347,10 @@ void LedService::flash_white(Led led, uint8_t value, uint32_t duration_ms) {
 }
 void LedService::off(Led /*led*/) {}
 void LedService::all_off() {}
+void LedService::set_charge_done_alert(bool /*active*/) {}
+void LedService::flash_led8_green(uint32_t /*duration_ms*/) {}
+void LedService::set_back_leds_rgb(uint8_t /*r*/, uint8_t /*g*/, uint8_t /*b*/) {}
+void LedService::set_indicator_brightness(uint8_t /*pwm*/) {}
 void LedService::_task_entry(void * /*arg*/) {}
 void LedService::_run() {}
 void LedService::_map(Led /*led*/, uint8_t & /*b_ch*/, uint8_t & /*g_ch*/, uint8_t & /*r_ch*/) {}
@@ -436,6 +449,16 @@ bool PowerService::poll_status(BmsStatus &status) {
 bool PowerService::reset_watchdog() { return true; }
 
 bool PowerService::set_charge_current_ma(uint16_t /*current_ma*/) { return true; }
+
+void PowerService::set_manual_charge_disabled(bool /*disabled*/) {}
+
+void PowerService::set_force_pmid_passthrough(bool /*force*/) {}
+
+PowerService::BlearnVerifyReadout PowerService::read_blearn_verify() {
+  return test_spy::blearn_verify_to_return;
+}
+
+bool PowerService::set_learning_update_status(bool /*enable*/) { return true; }
 
 void PowerService::shutdown() { test_spy::shutdown_called = true; }
 

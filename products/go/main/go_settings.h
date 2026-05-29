@@ -8,6 +8,21 @@
 #include "go_melody.h"
 #include "go_types.h"
 
+/// Persisted stage of the automated battery-learning (blearn) run.  A stage +
+/// a cycle counter encode the whole multi-cycle run without a flat per-cycle
+/// enum (design §1).  Survives the EDV ship-mode power-off via NVS so the run
+/// auto-resumes on the next boot.
+enum class BlearnStage : uint8_t {
+  Idle = 0,  ///< Not learning (normal operation).
+  Charge,    ///< Charging to Full Charge.
+  Rest,      ///< Charge off, quiet load, capturing OCV1.
+  Discharge, ///< Unplug cue raised; draining on battery toward EDV.
+  CycleDone, ///< EDV reached for this cycle — written+committed BEFORE ship mode.
+  Verify,    ///< Re-plugged after final cycle; checking pass criteria.
+  Complete,  ///< Learned + verified → normal operation forever.
+  Failed,    ///< Gave up (POR-loss loop, or verify failed after the cap).
+};
+
 struct GoSettings {
   // --- Measurement interval ---
   int measure_interval_seconds = 10; // 1..3600
@@ -84,6 +99,18 @@ struct GoSettings {
   /// user opts in.
   SoundSelect sound_select = SoundSelect::Off;
 
+  // --- Automated battery learning (blearn) — persisted run state ---
+  //
+  // Unlike battery_learning_enabled (above) — which is the non-persistent
+  // per-session admin arming for the LOW_POWER dashboard UX — these three
+  // fields ARE persisted (keys "bls"/"bln"/"bli") and drive the multi-cycle
+  // run + auto-resume across the EDV ship-mode power-off (design §1).  The
+  // persisted stage is authoritative across reboots even when the session
+  // toggle reads false after a cold boot.
+  BlearnStage blearn_stage = BlearnStage::Idle; ///< Current FSM stage ("bls").
+  uint8_t blearn_cycle = 0;                      ///< 1-based cycle in progress ("bln").
+  uint8_t blearn_itpor_losses = 0;               ///< POR-induced restart count ("bli").
+
   // --- Identity ---
   std::string device_name = "airgradient-go";
 };
@@ -91,5 +118,13 @@ struct GoSettings {
 GoSettings load_go_settings(ConfigStore &store);
 bool save_go_settings(ConfigStore &store, const GoSettings &settings);
 void print_settings(const GoSettings &settings);
+
+/// Atomically persist just the blearn run state (stage + cycle + itpor losses)
+/// via direct set_int + commit, without rewriting the whole GoSettings block
+/// (design §1 "Write discipline").  The prompt single-key commit is what makes
+/// the pre-ship-mode CycleDone write safe across the power-off.
+/// @return true when every set_int and the commit succeeded.
+bool save_blearn_state(ConfigStore &store, BlearnStage stage, uint8_t cycle,
+                       uint8_t itpor_losses);
 
 #endif // GO_SETTINGS_H

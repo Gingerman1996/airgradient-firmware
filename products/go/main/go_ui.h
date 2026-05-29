@@ -33,6 +33,8 @@ enum class UIAction : uint8_t {
                  ///< Accompanied by UIActionResult::sound_index.
   TestGpsSleep,  ///< Admin selected "GPS Sleep Test" — fires a one-shot
                  ///< CFG-SLEEP + deadline-based auto-resync cycle.
+  StartBatteryLearning, ///< Admin selected "Start battery learning" (design §8).
+  ResetBatteryLearning, ///< Admin selected "Reset battery learning" (design §8).
 };
 
 struct UIActionResult {

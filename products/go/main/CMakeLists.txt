@@ -15,6 +15,7 @@ idf_component_register(
          "go_io_expander.cpp"
          "go_led.cpp"
          "go_orchestrator.cpp"
+         "blearn_controller.cpp"
          "go_power.cpp"
          "go_sensor_producer.cpp"
          "go_storage.cpp"

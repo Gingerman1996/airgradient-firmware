@@ -138,6 +138,15 @@ PowerSnapshot PowerService::poll_bms() {
     fg.ctrl_ok = _fuel_gauge->control_subcommand(0x0000, fg.ctrl);
   }
 
+  // Surface the Impedance-Track learning flags on the snapshot for the
+  // battery-learning FSM + boot-resume path (design §3.1).  The fg.*() helpers
+  // already gate on their respective _ok bit, returning false on read failure
+  // — which is the safe "not learned" default.
+  status.fg_qmax_up = fg.qmax_up();
+  status.fg_res_up = fg.res_up();
+  status.fg_itpor = fg.itpor();
+  status.fg_ocv_taken = fg.ocv_taken();
+
   // --- SOC source: prefer FG; fall back to BMS voltage curve ---
   float pct = -1.0f;
   bool soc_from_fg = false;
@@ -160,6 +169,7 @@ PowerSnapshot PowerService::poll_bms() {
     status.charging_status = bms_status.charging_state;
     status.charger_status = bms_status;
     on_battery = !bms_power_source_has_external_input(bms_status.power_source);
+    status.external_input_present = !on_battery;
     if (!sync_pmid_mode(bms_status.power_source)) {
       AG_LOGW(TAG, "failed to sync PMID mode for source %s",
               bms_power_source_str(bms_status.power_source));
@@ -421,6 +431,55 @@ void PowerService::log_fg_learned_dump() {
     AG_LOGI(TAG, "FG-DUMP Ra SANITY: ok (no non-positive), max grid jump=%d at Ra[%d]->Ra[%d]",
             max_jump, max_jump_idx - 1, max_jump_idx);
   }
+}
+
+PowerService::BlearnVerifyReadout PowerService::read_blearn_verify() {
+  BlearnVerifyReadout out{};
+  if (_fuel_gauge == nullptr) {
+    return out; // ok=false
+  }
+
+  uint16_t qmax_raw = 0;
+  uint16_t dc_mah = 0;
+  uint16_t flags = 0;
+  uint16_t ctrl = 0;
+  int16_t ra[BQ27427::RA_TABLE_SIZE] = {};
+
+  const bool qmax_ok = _fuel_gauge->read_qmax_cell0(qmax_raw);
+  const bool dc_ok = _fuel_gauge->read_design_capacity_mah(dc_mah);
+  const bool ra_ok = _fuel_gauge->read_ra_table(ra);
+  const bool flags_ok = _fuel_gauge->read_flags(flags);
+  const bool ctrl_ok = _fuel_gauge->control_subcommand(0x0000, ctrl);
+
+  if (!(qmax_ok && dc_ok && ra_ok && flags_ok && ctrl_ok)) {
+    AG_LOGW(TAG, "blearn verify reads failed (qmax=%d dc=%d ra=%d flags=%d ctrl=%d)",
+            qmax_ok, dc_ok, ra_ok, flags_ok, ctrl_ok);
+    return out; // ok=false
+  }
+
+  out.ok = true;
+  // Qmax(mAh) = raw * Design Capacity / 2^14 (TRM §7.4.2.3.1).
+  out.qmax_mah = static_cast<uint16_t>((static_cast<uint32_t>(qmax_raw) * dc_mah) / 16384u);
+  out.design_capacity_mah = dc_mah;
+  out.itpor = (flags & (1u << 5)) != 0;   // Flags ITPOR
+  out.qmax_up = (ctrl & (1u << 9)) != 0;   // CONTROL_STATUS QMAX_UP
+  for (int i = 0; i < BQ27427::RA_TABLE_SIZE; ++i) {
+    out.ra[i] = ra[i];
+  }
+  AG_LOGI(TAG, "blearn verify: Qmax=%umAh DC=%umAh ITPOR=%d QMAX_UP=%d",
+          out.qmax_mah, out.design_capacity_mah, out.itpor, out.qmax_up);
+  return out;
+}
+
+bool PowerService::set_learning_update_status(bool enable) {
+  if (_fuel_gauge == nullptr) {
+    return true; // no gauge → treat as no-op success
+  }
+  const bool ok = _fuel_gauge->set_update_status_learning(enable);
+  if (!ok) {
+    AG_LOGW(TAG, "set_update_status_learning(%d) failed", enable);
+  }
+  return ok;
 }
 
 bool PowerService::poll_charging_status(BmsChargingState &state) {

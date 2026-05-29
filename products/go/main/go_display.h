@@ -21,6 +21,13 @@ enum class Screen : uint8_t {
   Shutdown,
   PairingPasskey,   ///< Shows 6-digit BLE pairing passkey
   DischargeComplete, ///< Battery-learning EDV cutoff reached — shown before ship mode
+  // --- Automated battery-learning phase screens (design §3.5) ---
+  BlearnCharging,    ///< Charging to Full Charge.
+  BlearnResting,     ///< Charge off, capturing OCV1.
+  BlearnUnplug,      ///< "Unplug charger" cue during discharge.
+  BlearnVerifying,   ///< Re-plugged after final cycle; checking pass criteria.
+  BlearnComplete,    ///< Learning passed verification.
+  BlearnFailed,      ///< Learning gave up (POR-loss loop or verify failed at cap).
 };
 
 enum class Metric : uint8_t {
@@ -61,6 +68,8 @@ struct PowerDashboardData {
   uint8_t bms_charging_state = 0; ///< BmsChargingState raw enum value
   bool low_power_active = false;  ///< Orchestrator::_in_learning_low_power mirror
   bool plugged_in = false;        ///< For phase derivation (CHARGE vs RELAX label)
+  const char *blearn_phase = nullptr; ///< When set, the automated-learning stage
+                                      ///< label overrides the CHARGE/RELAX banner.
 };
 
 struct DisplayValues {
@@ -268,6 +277,7 @@ private:
   void _draw_snackbar(const DisplayValues &v);
   void _draw_shutdown();
   void _draw_discharge_complete();
+  void _draw_blearn_phase(const char *line1, const char *line2);
   void _draw_pairing_passkey(const DisplayValues &v);
   void _draw_chart(const DisplayValues &v);
 

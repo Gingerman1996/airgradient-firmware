@@ -160,6 +160,11 @@ void Orchestrator::init(WakeCause cause, const BootHandoff &handoff) {
   _latest_power = _svc.power_service.poll_bms();
   handle_edv_cutoff();
 
+  // Boot-resume the automated battery-learning FSM (design §6).  Runs once,
+  // after settings are loaded and one poll_bms() has refreshed the FG flags +
+  // power source.  No-op for a normal field unit (stage Idle/Complete/Failed).
+  resume_blearn_on_boot();
+
   uint32_t now = static_cast<uint32_t>(RTOS::get_time_ms());
   _last_measurement_ms = now;
   _last_bms_poll_ms = now;
@@ -375,6 +380,14 @@ void Orchestrator::on_bms_status_timer() {
           was_charging ? "charging" : "not charging", now_charging ? "charging" : "not charging",
           bms_power_source_str(previous_power_source), bms_power_source_str(status.power_source));
       request_background_display_update();
+    }
+
+    // Automated battery-learning FSM owns charge / load / cue / screen while a
+    // run is in progress (design Part 2).  When it's active it fully supersedes
+    // the legacy admin "battery learning" UX below, so skip that block.
+    if (tick_blearn()) {
+      _last_bms_status_poll_ms = static_cast<uint32_t>(RTOS::get_time_ms());
+      return;
     }
 
     // Charge-done UX sequence — only runs in admin mode (calibration
@@ -819,6 +832,34 @@ void Orchestrator::on_input(const InputEventData &input) {
             static_cast<unsigned>(TEST_SLEEP_MS));
     break;
   }
+  case UIAction::StartBatteryLearning: {
+    // Arm the from-scratch learning change limits (§10.3) BEFORE entering the
+    // FSM's cycle-1 Charge, so the first cycle can move Qmax/Ra freely.
+    if (!_svc.power_service.set_learning_update_status(true)) {
+      _svc.ui_manager.show_snackbar("Learning arm failed");
+      AG_LOGE(TAG, "blearn: failed to set Update Status learning bits — not starting");
+      break;
+    }
+    _blearn.start();
+    persist_blearn_state();
+    // Leave the admin menu so the phase screen is visible — apply_blearn_action()
+    // suppresses repaints while on a menu screen, so a run armed from the menu
+    // would otherwise never show "Charging…".  start() always begins at Charge.
+    _svc.ui_manager.set_screen(Screen::BlearnCharging);
+    _svc.ui_manager.show_snackbar("Battery learning started");
+    AG_LOGI(TAG, "blearn: run started by admin (cycle 1)");
+    break;
+  }
+  case UIAction::ResetBatteryLearning: {
+    _blearn.reset();
+    persist_blearn_state();
+    // Release any learning rails + cue so the device returns to normal.
+    _svc.power_service.set_manual_charge_disabled(false);
+    _svc.led.set_charge_done_alert(false);
+    _svc.ui_manager.show_snackbar("Battery learning reset");
+    AG_LOGI(TAG, "blearn: run reset to Idle by admin");
+    break;
+  }
   case UIAction::PlaySound: {
     apply_settings_change();
     const uint32_t duration_ms = play_sound_select(
@@ -1200,6 +1241,22 @@ void Orchestrator::handle_edv_cutoff() {
   if (!_latest_power.edv_cutoff_reached) {
     return;
   }
+
+  // EDV ordering (design §5): when a learning run is mid-Discharge, the
+  // "cycle done" marker MUST be persisted+committed to NVS BEFORE ship-mode —
+  // otherwise the cycle is silently lost across the power-off.  If the commit
+  // fails, do NOT ship: return and retry on the next poll (the cell still has
+  // headroom above DW01).
+  if (_blearn.stage() == BlearnStage::Discharge) {
+    _blearn.tick(_latest_power, static_cast<uint32_t>(RTOS::get_time_ms())); // → CycleDone
+    if (!persist_blearn_state()) {
+      AG_LOGE(TAG, "EDV: blearn CycleDone commit FAILED — NOT shipping, will retry next poll");
+      return;
+    }
+    AG_LOGI(TAG, "EDV: blearn cycle %u done, committed — proceeding to ship mode",
+            _blearn.cycle());
+  }
+
   AG_LOGI(TAG, "EDV cutoff reached — painting discharge-complete screen before ship mode");
   _svc.ui_manager.set_screen(Screen::DischargeComplete);
   update_display();
@@ -1209,6 +1266,114 @@ void Orchestrator::handle_edv_cutoff() {
   RTOS::delay_ms(SHUTDOWN_DISPLAY_DELAY_MS);
 
   _svc.power_service.trigger_edv_ship_mode(); // BMS QoN — does not return on success
+}
+
+// ---------------------------------------------------------------------------
+// Automated battery learning (design Part 2)
+// ---------------------------------------------------------------------------
+
+bool Orchestrator::persist_blearn_state() {
+  _settings.blearn_stage = _blearn.stage();
+  _settings.blearn_cycle = _blearn.cycle();
+  _settings.blearn_itpor_losses = _blearn.itpor_losses();
+  const bool ok = save_blearn_state(_config_store, _blearn.stage(), _blearn.cycle(),
+                                    _blearn.itpor_losses());
+  if (!ok) {
+    AG_LOGE(TAG, "failed to persist blearn state (stage=%d cycle=%u)",
+            static_cast<int>(_blearn.stage()), _blearn.cycle());
+  }
+  return ok;
+}
+
+void Orchestrator::run_blearn_verify() {
+  PowerService::BlearnVerifyReadout r = _svc.power_service.read_blearn_verify();
+  VerifyInputs in{};
+  in.reads_ok = r.ok;
+  in.itpor = r.itpor;
+  in.qmax_up = r.qmax_up;
+  in.qmax_mah = r.qmax_mah;
+  in.design_capacity_mah = r.design_capacity_mah;
+  for (int i = 0; i < BlearnController::RA_TABLE_SIZE; ++i) {
+    in.ra[i] = r.ra[i];
+  }
+  if (_blearn.on_verify_result(in)) {
+    // On Complete, restore the gauge's normal bounded change limits (§10.3);
+    // a failed verify leaves them lifted for the next cycle.
+    if (_blearn.stage() == BlearnStage::Complete) {
+      _svc.power_service.set_learning_update_status(false);
+    }
+    persist_blearn_state();
+  }
+}
+
+void Orchestrator::apply_blearn_action(const BlearnAction &action) {
+  // Charge control: enable/disable + current.  set_manual_charge_disabled is
+  // the charge-off knob already used by the legacy learning UX.
+  _svc.power_service.set_manual_charge_disabled(!action.set_charge_enabled);
+  if (action.set_charge_enabled && action.charge_current_ma != 0) {
+    _svc.power_service.set_charge_current_ma(action.charge_current_ma);
+  }
+
+  // Load polarity (design §4): Rest wants quiet load (LOW_POWER on), Discharge
+  // wants full load (LOW_POWER off).  Drive the same rails the legacy learning
+  // UX toggles, keyed on the FSM's explicit per-stage request rather than on
+  // plug state.
+  if (action.low_power && !_in_learning_low_power) {
+    AG_LOGI(TAG, "blearn: entering LOW_POWER (quiet load for OCV)");
+    _svc.power_service.set_pm_power(false);
+    _svc.power_service.set_force_pmid_passthrough(true);
+    _svc.gps_service.sleep_for_ms(LEARNING_GPS_SLEEP_MS);
+    _svc.sensor_producer.request_low_power(true);
+    _svc.ble_service.deinit();
+    _in_learning_low_power = true;
+  } else if (!action.low_power && _in_learning_low_power) {
+    AG_LOGI(TAG, "blearn: exiting LOW_POWER (full load for discharge)");
+    _svc.power_service.set_pm_power(true);
+    _svc.power_service.set_force_pmid_passthrough(false);
+    _svc.gps_service.wake_from_sleep();
+    _svc.sensor_producer.request_low_power(false);
+    init_ble_if_portable();
+    _in_learning_low_power = false;
+  }
+
+  // Unplug cue — reuse the LED8 charge-done blinker.
+  _svc.led.set_charge_done_alert(action.unplug_cue);
+
+  // Phase screen — only when on a non-menu screen so we don't fight the user
+  // navigating the admin menu.
+  if (!_svc.ui_manager.is_on_menu_screen()) {
+    _svc.ui_manager.set_screen(action.screen);
+  }
+
+  if (action.persist_stage) {
+    persist_blearn_state();
+  }
+
+  if (action.run_verify) {
+    run_blearn_verify();
+  }
+
+  // commit_then_ship is handled by handle_edv_cutoff() (the EDV poll path),
+  // which owns the persist-before-ship ordering (§5).
+}
+
+bool Orchestrator::tick_blearn() {
+  const uint32_t now_ms = static_cast<uint32_t>(RTOS::get_time_ms());
+  BlearnAction action = _blearn.tick(_latest_power, now_ms);
+  if (!action.active && !action.persist_stage) {
+    return false;
+  }
+  apply_blearn_action(action);
+  return action.active;
+}
+
+void Orchestrator::resume_blearn_on_boot() {
+  _blearn.load(_settings.blearn_stage, _settings.blearn_cycle, _settings.blearn_itpor_losses);
+  if (_blearn.resume_on_boot(_latest_power)) {
+    AG_LOGI(TAG, "blearn boot-resume: stage=%d cycle=%u itpor_losses=%u",
+            static_cast<int>(_blearn.stage()), _blearn.cycle(), _blearn.itpor_losses());
+    persist_blearn_state();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1472,10 +1637,15 @@ BuildContext Orchestrator::build_context() const {
 
   bool is_charging = is_bms_charging(_latest_power.charging_status);
 
-  // Power dashboard is only meaningful — and only visible — when admin has
-  // explicitly opted into Battery Learning.  Production users (admin off)
-  // never see it; the home screen renders the normal sensor grid.
-  const bool show_power_dashboard = _settings.admin_mode && _settings.battery_learning_enabled;
+  // Power dashboard shows the live FG readout (SOC, V, I, FCC drift) during
+  // learning.  Visible for the legacy admin opt-in AND for any active
+  // automated-learning phase, so the operator sees the live values rather than
+  // a bare phase label.  Production users (admin off, no run) never see it.
+  const BlearnStage bstage = _blearn.stage();
+  const bool blearn_active = bstage == BlearnStage::Charge || bstage == BlearnStage::Rest ||
+                             bstage == BlearnStage::Discharge || bstage == BlearnStage::Verify;
+  const bool show_power_dashboard =
+      (_settings.admin_mode && _settings.battery_learning_enabled) || blearn_active;
   PowerDashboardData dash{};
   if (show_power_dashboard) {
     const auto &t = _latest_power.telemetry;
@@ -1494,8 +1664,27 @@ BuildContext Orchestrator::build_context() const {
     dash.charge_current_ma = _settings.charge_current_ma;
     dash.bms_charging_state = static_cast<uint8_t>(_latest_power.charging_status);
     dash.low_power_active = _in_learning_low_power;
-    dash.plugged_in =
+    const bool plugged =
         bms_power_source_has_external_input(_latest_power.charger_status.power_source);
+    dash.plugged_in = plugged;
+    switch (bstage) {
+    case BlearnStage::Charge:
+      dash.blearn_phase = "CHARGING";
+      break;
+    case BlearnStage::Rest:
+      dash.blearn_phase = "RESTING";
+      break;
+    case BlearnStage::Discharge:
+      // Discharge stage raises the unplug cue; once the operator has unplugged,
+      // show the actual discharge state instead of a stale prompt.
+      dash.blearn_phase = plugged ? "UNPLUG NOW" : "DISCHARGING";
+      break;
+    case BlearnStage::Verify:
+      dash.blearn_phase = "VERIFYING";
+      break;
+    default:
+      break;
+    }
   }
 
   return BuildContext{

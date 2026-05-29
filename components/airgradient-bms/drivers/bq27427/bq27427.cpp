@@ -57,6 +57,7 @@ constexpr uint8_t CMD_BLOCK_DATA_CONTROL = 0x61;
 // Subclass / offsets in Data Memory (TRM §7.4.2.3.5–7.4.2.3.10).
 constexpr uint8_t SUBCLASS_STATE = 0x52;        // 82 decimal
 constexpr uint8_t OFFSET_QMAX_CELL0 = 0;        // bytes 0/1 (TRM §7.4.2.3.1)
+constexpr uint8_t OFFSET_UPDATE_STATUS = 2;     // byte 2 (TRM §7.4.2.3.2)
 constexpr uint8_t OFFSET_DESIGN_CAPACITY = 6;   // bytes 6/7 within block 0
 constexpr uint8_t OFFSET_DESIGN_ENERGY = 8;     // bytes 8/9
 constexpr uint8_t OFFSET_TERMINATE_VOLTAGE = 10; // bytes 10/11
@@ -68,6 +69,11 @@ constexpr uint8_t SUBCLASS_RA0_RAM = 0x59;      // 89 decimal
 
 // Flags() bit 4 = CFGUPDATE mode active.
 constexpr uint16_t FLAG_CFGUPDATE = (1u << 4);
+
+// Update Status (subclass 0x52, offset 2) — bit0 (Qmax) + bit1 (Ra).  Setting
+// both removes the per-update change limits for a from-scratch learn (TRM
+// §7.4.2.3.2, p43; fg_learning_sequence.md:55/93).
+constexpr uint8_t UPDATE_STATUS_LEARN_BITS = 0x03;
 
 // Per datasheet §6.3.1.3, the Control() subcommand result is not ready
 // immediately after the write — but the spec says only that read-WRITE
@@ -465,6 +471,113 @@ bool BQ27427::select_chemistry_4v2() {
   }
   ESP_LOGI(TAG, "Chemistry switched to 0x%04X (4.2 V) — learning reset, re-learn required",
            verify);
+  return true;
+}
+
+bool BQ27427::set_update_status_learning(bool enable) {
+  if (_dev == nullptr) {
+    return false;
+  }
+
+  // Read the current State block so we can compare just the Update Status byte
+  // (offset 2) and stay idempotent — same constraint as the other DM accesses:
+  // the read must START at 0x40 so the chip fills its buffer from Data Memory.
+  if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  uint8_t block[32] = {};
+  if (!_read_block(CMD_BLOCK_DATA_BASE, block, sizeof(block))) {
+    return false;
+  }
+
+  const uint8_t cur = block[OFFSET_UPDATE_STATUS];
+  const uint8_t want = enable ? static_cast<uint8_t>(cur | UPDATE_STATUS_LEARN_BITS)
+                              : static_cast<uint8_t>(cur & ~UPDATE_STATUS_LEARN_BITS);
+
+  // Idempotency: leave learned state untouched (no CFGUPDATE) when the bits
+  // already hold the requested value.
+  if (cur == want) {
+    ESP_LOGI(TAG, "Update Status already 0x%02X (learn bits %s) — no change", cur,
+             enable ? "set" : "clear");
+    return true;
+  }
+  ESP_LOGI(TAG, "Update Status 0x%02X → 0x%02X (learn bits %s — %s per-update change limits)",
+           cur, want, enable ? "set" : "clear", enable ? "lifting" : "restoring");
+
+  // UNSEAL — required for any DM commit (TRM §6.4).  No-op when already unsealed.
+  if (!_unseal()) {
+    return false;
+  }
+
+  // Enter CFGUPDATE.
+  if (!_write_word(CMD_CONTROL, CTRL_SET_CFGUPDATE)) {
+    return false;
+  }
+  if (!_wait_cfgupdate_flag(true, 2000)) {
+    ESP_LOGW(TAG, "Could not enter CFGUPDATE — aborting Update Status write");
+    return false;
+  }
+
+  // Re-select the block (CFGUPDATE entry can clear the block pointer).
+  if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  if (!_read_block(CMD_BLOCK_DATA_BASE, block, sizeof(block))) {
+    return false;
+  }
+
+  // Modify only the Update Status byte locally.
+  block[OFFSET_UPDATE_STATUS] = enable
+                                    ? static_cast<uint8_t>(block[OFFSET_UPDATE_STATUS] |
+                                                           UPDATE_STATUS_LEARN_BITS)
+                                    : static_cast<uint8_t>(block[OFFSET_UPDATE_STATUS] &
+                                                           ~UPDATE_STATUS_LEARN_BITS);
+
+  // Write the full 32-byte block back in one transaction.
+  if (!_write_block(CMD_BLOCK_DATA_BASE, block, sizeof(block))) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+
+  // Fresh checksum from the modified block.
+  uint16_t sum = 0;
+  for (size_t i = 0; i < sizeof(block); ++i) {
+    sum += block[i];
+  }
+  const uint8_t new_csum = static_cast<uint8_t>(255 - (sum & 0xFF));
+
+  // Commit: writing the checksum transfers BlockData() to RAM.
+  if (!_write_byte(CMD_BLOCK_DATA_CHECKSUM, new_csum)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(20));
+
+  // Exit CFGUPDATE.
+  if (!_write_word(CMD_CONTROL, CTRL_SOFT_RESET)) {
+    return false;
+  }
+  if (!_wait_cfgupdate_flag(false, 2000)) {
+    return false;
+  }
+
+  // Readback verification — re-read the Update Status byte and compare.
+  vTaskDelay(pdMS_TO_TICKS(50));
+  if (!_select_data_block(SUBCLASS_STATE, 0x00)) {
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+  uint8_t verify[8] = {};
+  if (!_read_block(CMD_BLOCK_DATA_BASE, verify, sizeof(verify))) {
+    return false;
+  }
+  if (verify[OFFSET_UPDATE_STATUS] != want) {
+    ESP_LOGE(TAG, "Update Status write did NOT stick — wanted 0x%02X, readback 0x%02X",
+             want, verify[OFFSET_UPDATE_STATUS]);
+    return false;
+  }
+  ESP_LOGI(TAG, "Update Status verified at 0x%02X (csum=0x%02X)", want, new_csum);
   return true;
 }
 

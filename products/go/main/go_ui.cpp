@@ -91,10 +91,12 @@ static constexpr uint8_t SETTING_BATTERY_LEARNING = 14;
 static constexpr uint8_t SETTING_CHARGE_CUTOFF = 15;
 static constexpr uint8_t SETTING_CHARGE_CURRENT = 16;
 static constexpr uint8_t SETTING_GPS_SLEEP_TEST = 17;
-static constexpr uint8_t SETTING_EXIT_ADMIN = 18;
-static constexpr uint8_t ADMIN_HIDDEN_ROWS = 5;
+static constexpr uint8_t SETTING_START_BLEARN = 18;
+static constexpr uint8_t SETTING_RESET_BLEARN = 19;
+static constexpr uint8_t SETTING_EXIT_ADMIN = 20;
+static constexpr uint8_t ADMIN_HIDDEN_ROWS = 7;
 
-static constexpr uint8_t SETTINGS_TOTAL = 19;       // indices 0..18
+static constexpr uint8_t SETTINGS_TOTAL = 21;       // indices 0..20
 static constexpr uint8_t TAG_LIST_TOTAL = 12;       // indices 0..11
 static constexpr uint8_t MAIN_MENU_TOTAL = 4;       // indices 0..3
 static constexpr uint8_t CONFIRM_TOTAL = 5;         // indices 0..4
@@ -184,6 +186,13 @@ UIActionResult UIManager::handle_input(InputSource source, InputType type) {
   case Screen::Shutdown:
   case Screen::DischargeComplete:
   case Screen::PairingPasskey:
+  case Screen::BlearnCharging:
+  case Screen::BlearnResting:
+  case Screen::BlearnUnplug:
+  case Screen::BlearnVerifying:
+  case Screen::BlearnComplete:
+  case Screen::BlearnFailed:
+    // Non-interactive status screens — input is ignored.
     return {};
   }
   return {};
@@ -255,7 +264,13 @@ DisplayValues UIManager::build_values(const BuildContext &ctx) const {
     break;
   case Screen::Shutdown:
   case Screen::DischargeComplete:
-    break;
+  case Screen::BlearnCharging:
+  case Screen::BlearnResting:
+  case Screen::BlearnUnplug:
+  case Screen::BlearnVerifying:
+  case Screen::BlearnComplete:
+  case Screen::BlearnFailed:
+    break; // full-screen status — no rows to populate
   case Screen::PairingPasskey:
     v.ble_passkey = _ble_passkey;
     break;
@@ -837,6 +852,14 @@ UIActionResult UIManager::dispatch_settings(InputSource source, InputType type) 
       // Admin-mode-only one-shot action.  Orchestrator dispatches to
       // GpsService::sleep_for_ms() and shows a snackbar.
       result.action = UIAction::TestGpsSleep;
+    } else if (_settings_index == SETTING_START_BLEARN && _admin_mode) {
+      // Admin-mode-only one-shot action: arm the automated battery-learning
+      // FSM (design §8).  Orchestrator calls BlearnController::start().
+      result.action = UIAction::StartBatteryLearning;
+    } else if (_settings_index == SETTING_RESET_BLEARN && _admin_mode) {
+      // Admin-mode-only one-shot action: clear the learning FSM to Idle
+      // (operator escape from Failed/stuck — design §8).
+      result.action = UIAction::ResetBatteryLearning;
     } else if ((_settings_index >= SETTING_UNITS &&
                 _settings_index <= SETTING_PLAY_SOUND) ||
                (_settings_index == SETTING_BATTERY_LEARNING && _admin_mode) ||
@@ -1122,6 +1145,20 @@ void UIManager::populate_settings_rows(DisplayValues &v) const {
         continue;
       }
       (void)snprintf(label, sizeof(label), "GPS Sleep Test");
+      break;
+    case SETTING_START_BLEARN:
+      // Admin-only — hidden in production.  One-shot: arms the learning FSM.
+      if (!_admin_mode) {
+        continue;
+      }
+      (void)snprintf(label, sizeof(label), "Start battery learning");
+      break;
+    case SETTING_RESET_BLEARN:
+      // Admin-only — hidden in production.  One-shot: clears the learning FSM.
+      if (!_admin_mode) {
+        continue;
+      }
+      (void)snprintf(label, sizeof(label), "Reset battery learning");
       break;
     case SETTING_EXIT_ADMIN:
       // Hidden in production — render only when admin mode is active.

@@ -60,6 +60,23 @@ struct PowerSnapshot {
   bool fg_flag_fc = false;
   bool fg_flag_chg = false;
   bool fg_flag_dsg = false;
+
+  /// Impedance-Track learning flags, lifted from the local FgSnapshot so the
+  /// battery-learning FSM (BlearnController) and the boot-resume path can read
+  /// them without re-reading the gauge.  Populated by poll_bms() whenever the
+  /// gauge is attached and the underlying read succeeded (Flags() for
+  /// itpor/ocv_taken, CONTROL_STATUS for qmax_up/res_up).  Default false (also
+  /// the safe "not learned / read failed" value).
+  bool fg_qmax_up = false;  ///< CONTROL_STATUS QMAX_UP — Qmax updated since POR.
+  bool fg_res_up = false;   ///< CONTROL_STATUS RES_UP — Ra updated (diagnostic only).
+  bool fg_itpor = false;    ///< Flags ITPOR — a POR/reset wiped learning.
+  bool fg_ocv_taken = false; ///< Flags OCVTAKEN — an OCV sample was captured.
+
+  /// True when an external charger input is present (USB plugged in), false on
+  /// battery.  Derived from the BMS power source in poll_bms().  The
+  /// boot-resume path uses this to tell "operator re-plugged" from "spurious
+  /// reset still on battery" (design §6).
+  bool external_input_present = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -139,6 +156,30 @@ public:
   /// Sleep/Relax and take OCV1.  Higher precedence than
   /// set_charge_cutoff_at_full(); lower than the thermal cutoff.
   void set_manual_charge_disabled(bool disabled);
+
+  /// Learned fuel-gauge values read back for the battery-learning verify
+  /// gate (design §7).  All fields default to a "failed / not-learned" value;
+  /// `ok` is true only when every underlying gauge read succeeded.
+  struct BlearnVerifyReadout {
+    bool ok = false;
+    bool itpor = false;
+    bool qmax_up = false;
+    uint16_t qmax_mah = 0;
+    uint16_t design_capacity_mah = 0;
+    int16_t ra[15] = {}; ///< BQ27427::RA_TABLE_SIZE
+  };
+
+  /// Read the gauge's learned Qmax (converted to mAh), Design Capacity, Ra
+  /// grid, and the ITPOR / QMAX_UP status bits for verification.  Pure Data
+  /// Memory + status reads — does NOT enter CFGUPDATE, so learned state is
+  /// untouched.  Safe no-op (returns ok=false) when no gauge is attached.
+  BlearnVerifyReadout read_blearn_verify();
+
+  /// Set or clear the gauge's Update Status learning bits (bit0+bit1) via the
+  /// driver's CFGUPDATE path — lift the per-update change limits for a
+  /// from-scratch learn, restore them at completion (design §3.6 / §10.3).
+  /// @return true on success or when no gauge is attached (treated as no-op).
+  bool set_learning_update_status(bool enable);
 
   /// Update the BMS fast-charge current limit (CC mode), in mA.  Idempotent:
   /// only issues an I²C write when the requested value differs from the

@@ -1143,6 +1143,19 @@ void DisplayService::_render_frame(const DisplayValues &v) {
     return;
   }
 
+  // Automated battery-learning terminal result screens — full-screen pass/fail
+  // (design §3.5).  The active phases (Charging/Resting/Unplug/Verifying) fall
+  // through to the live power dashboard below so the operator sees the FG
+  // readout (SOC, V, I, FCC drift) with the stage shown in the dashboard banner.
+  if (v.screen == Screen::BlearnComplete) {
+    _draw_blearn_phase("Battery learning", "Complete");
+    return;
+  }
+  if (v.screen == Screen::BlearnFailed) {
+    _draw_blearn_phase("Battery learning", "Failed");
+    return;
+  }
+
   _draw_status_bar(v);
 
   switch (v.screen) {
@@ -1160,8 +1173,16 @@ void DisplayService::_render_frame(const DisplayValues &v) {
   case Screen::About:
     _draw_full_screen_list(v);
     break;
+  case Screen::BlearnCharging:
+  case Screen::BlearnResting:
+  case Screen::BlearnUnplug:
+  case Screen::BlearnVerifying:
+    _draw_power_dashboard(v);
+    break;
   case Screen::Shutdown:
   case Screen::DischargeComplete:
+  case Screen::BlearnComplete:
+  case Screen::BlearnFailed:
     break; // Already handled above
   case Screen::PairingPasskey:
     _draw_pairing_passkey(v);
@@ -1432,7 +1453,9 @@ void DisplayService::_draw_power_dashboard(const DisplayValues &v) {
   // Plugged-in + low-power means CHARGE phase running the low-power gates
   // (SPS30 + GPS off so charge current isn't burnt by the load).
   const char *phase;
-  if (!p.plugged_in && p.low_power_active) {
+  if (p.blearn_phase != nullptr) {
+    phase = p.blearn_phase;
+  } else if (!p.plugged_in && p.low_power_active) {
     phase = "RELAX LOW-PWR";
   } else if (p.plugged_in && p.low_power_active) {
     phase = "CHRG LOW-PWR";
@@ -1555,6 +1578,13 @@ void DisplayService::_draw_discharge_complete() {
   u8g2_SetFont(&_u8g2, u8g2_font_6x10_tr);
   draw_centered_text(&_u8g2, CONTENT_W / 2, 115, "Discharge complete");
   draw_centered_text(&_u8g2, CONTENT_W / 2, 135, "Ship mode");
+  draw_logo(&_u8g2, 218, 24);
+}
+
+void DisplayService::_draw_blearn_phase(const char *line1, const char *line2) {
+  u8g2_SetFont(&_u8g2, u8g2_font_6x10_tr);
+  draw_centered_text(&_u8g2, CONTENT_W / 2, 115, line1);
+  draw_centered_text(&_u8g2, CONTENT_W / 2, 135, line2);
   draw_logo(&_u8g2, 218, 24);
 }
 

@@ -22,6 +22,9 @@ constexpr const char *KEY_ADMIN_MODE = "adm";
 constexpr const char *KEY_BATTERY_LEARNING = "blr";
 constexpr const char *KEY_CHARGE_CUTOFF = "cco";
 constexpr const char *KEY_SOUND_SELECT = "sd";
+constexpr const char *KEY_BLEARN_STAGE = "bls";
+constexpr const char *KEY_BLEARN_CYCLE = "bln";
+constexpr const char *KEY_BLEARN_ITPOR_LOSSES = "bli";
 
 bool is_measure_interval_valid(int value) { return value >= 1 && value <= 3600; }
 
@@ -50,6 +53,10 @@ bool is_device_name_valid(const std::string &value) { return !value.empty() && v
 
 bool is_sound_select_valid(int value) {
   return value >= 0 && value < static_cast<int>(SOUND_SELECT_COUNT);
+}
+
+bool is_blearn_stage_valid(int value) {
+  return value >= 0 && value <= static_cast<int>(BlearnStage::Failed);
 }
 
 const char *sound_select_name(SoundSelect s) {
@@ -157,6 +164,25 @@ GoSettings load_go_settings(ConfigStore &store) {
   if (store.get_int(KEY_SOUND_SELECT, sound_select) == ConfigStoreResult::OK &&
       is_sound_select_valid(sound_select)) {
     settings.sound_select = static_cast<SoundSelect>(sound_select);
+  }
+
+  // Battery-learning run state — persisted (drives multi-cycle auto-resume).
+  int blearn_stage = 0;
+  if (store.get_int(KEY_BLEARN_STAGE, blearn_stage) == ConfigStoreResult::OK &&
+      is_blearn_stage_valid(blearn_stage)) {
+    settings.blearn_stage = static_cast<BlearnStage>(blearn_stage);
+  }
+
+  int blearn_cycle = 0;
+  if (store.get_int(KEY_BLEARN_CYCLE, blearn_cycle) == ConfigStoreResult::OK &&
+      blearn_cycle >= 0 && blearn_cycle <= 255) {
+    settings.blearn_cycle = static_cast<uint8_t>(blearn_cycle);
+  }
+
+  int blearn_itpor_losses = 0;
+  if (store.get_int(KEY_BLEARN_ITPOR_LOSSES, blearn_itpor_losses) == ConfigStoreResult::OK &&
+      blearn_itpor_losses >= 0 && blearn_itpor_losses <= 255) {
+    settings.blearn_itpor_losses = static_cast<uint8_t>(blearn_itpor_losses);
   }
 
   return settings;
@@ -277,11 +303,50 @@ bool save_go_settings(ConfigStore &store, const GoSettings &settings) {
     return false;
   }
 
+  // Persist the blearn run state alongside the rest of the block.  Stage
+  // transitions during a run go through save_blearn_state() (single-key
+  // atomic commit), but a full save_go_settings() must not drop these fields.
+  if (store.set_int(KEY_BLEARN_STAGE, static_cast<int>(settings.blearn_stage)) !=
+      ConfigStoreResult::OK) {
+    return false;
+  }
+
+  if (store.set_int(KEY_BLEARN_CYCLE, settings.blearn_cycle) != ConfigStoreResult::OK) {
+    return false;
+  }
+
+  if (store.set_int(KEY_BLEARN_ITPOR_LOSSES, settings.blearn_itpor_losses) !=
+      ConfigStoreResult::OK) {
+    return false;
+  }
+
   if (store.commit() != ConfigStoreResult::OK) {
     return false;
   }
 
   print_settings(settings);
+  return true;
+}
+
+bool save_blearn_state(ConfigStore &store, BlearnStage stage, uint8_t cycle,
+                       uint8_t itpor_losses) {
+  if (!is_blearn_stage_valid(static_cast<int>(stage))) {
+    return false;
+  }
+  if (store.set_int(KEY_BLEARN_STAGE, static_cast<int>(stage)) != ConfigStoreResult::OK) {
+    return false;
+  }
+  if (store.set_int(KEY_BLEARN_CYCLE, cycle) != ConfigStoreResult::OK) {
+    return false;
+  }
+  if (store.set_int(KEY_BLEARN_ITPOR_LOSSES, itpor_losses) != ConfigStoreResult::OK) {
+    return false;
+  }
+  if (store.commit() != ConfigStoreResult::OK) {
+    return false;
+  }
+  AG_LOGI(TAG, "blearn state persisted: stage=%d cycle=%u itpor_losses=%u",
+          static_cast<int>(stage), cycle, itpor_losses);
   return true;
 }
 

@@ -144,6 +144,25 @@ public:
   /// @return true on success or when no change was needed.
   bool select_chemistry_4v2();
 
+  /// Enable or disable from-scratch Impedance-Track learning by writing the
+  /// Update Status byte's bit0+bit1 (subclass 0x52 / State, offset 2; TRM
+  /// §7.4.2.3.2, p43).  Per the TRM: *"Only if a learning cycle is to be
+  /// completed during initial configuration of the gauge's golden file should
+  /// bit 0 and bit 1 be set"* — setting them lifts the per-update change
+  /// limits (Max Qmax Change, Qmax Max Delta%, Ra Filter, Ra Max Delta) so
+  /// Qmax and the whole Ra grid can move freely in as few cycles as possible
+  /// (`fg_learning_sequence.md:55`).  Clear them at completion so the shipped
+  /// unit applies the normal bounded field-refinement limits
+  /// (`fg_learning_sequence.md:93`).
+  ///
+  /// Drives the same UNSEAL → CFGUPDATE → block-write → checksum → SOFT_RESET
+  /// path as configure_cell().  Idempotent: a no-op (no CFGUPDATE entered, so
+  /// learned state is preserved) when the two bits already hold the requested
+  /// value.
+  /// @param enable  true → set bit0+bit1 (learning armed); false → clear them.
+  /// @return true on success or when no change was needed.
+  bool set_update_status_learning(bool enable);
+
   /// Write a new Design Capacity (mAh) to data memory if the current value
   /// differs from `mah`.  Drives the full CFGUPDATE → write block → checksum
   /// → SOFT_RESET sequence (TRM §4.1).  Idempotent: a no-op when already

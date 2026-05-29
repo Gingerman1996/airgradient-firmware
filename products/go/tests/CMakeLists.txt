@@ -233,6 +233,7 @@ catch_discover_tests(go_ui_tests)
 add_library(go_orchestrator_test_support
     "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_orchestrator.cpp"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_ui.cpp"
+    "${AIRGRADIENT_REPO_ROOT}/products/go/main/blearn_controller.cpp"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_settings.cpp"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_melody.cpp"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/common.cpp"
@@ -367,6 +368,36 @@ target_link_libraries(go_ble_insecure_tests PRIVATE
 catch_discover_tests(go_ble_insecure_tests
     TEST_PREFIX "insecure::"
 )
+
+# ---------------------------------------------------------------------------
+# blearn_controller tests (pure FSM — no driver / ESP-IDF dependency)
+# ---------------------------------------------------------------------------
+
+add_library(blearn_controller_test_support
+    "${AIRGRADIENT_REPO_ROOT}/products/go/main/blearn_controller.cpp"
+)
+
+target_include_directories(blearn_controller_test_support PUBLIC
+    "${AIRGRADIENT_REPO_ROOT}/products/go/main"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-config/hal"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-bms"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-bms/types"
+    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-gpio/hal"
+)
+
+target_compile_definitions(blearn_controller_test_support PUBLIC TEST_HOST)
+
+add_executable(blearn_controller_tests
+    blearn_controller.tests.cpp
+)
+
+target_link_libraries(blearn_controller_tests PRIVATE
+    blearn_controller_test_support
+    Catch2::Catch2WithMain
+)
+
+catch_discover_tests(blearn_controller_tests)
 
 # ---------------------------------------------------------------------------
 # go_settings tests
