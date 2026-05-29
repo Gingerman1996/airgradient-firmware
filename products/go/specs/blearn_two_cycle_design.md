@@ -1,6 +1,6 @@
 # Workflow: One-button automated battery learning (blearn) — AirGradient Go
 
-**Status:** Workflow spec for design hand-off
+**Status:** **As-built (hand-off reference).** The workflow below ships in firmware: the FSM (`blearn_controller.{cpp,h}`), the EDV ship-mode path, the persisted NVS state, and the FG learned-value read-back are all in the tree. Parts 1–2 describe shipped operator + device behaviour. The "Firmware design" half (§1–§9) was the *original implementation spec* and is now **historical** — the design landed, but exact function signatures, symbol names, and ordering may differ from the code. **Where a citation and the source disagree, the source wins.** §10 (the three gauge-side prerequisites) is the live open work, not yet resolved.
 **Target:** AirGradient Go (ESP32-C5, ESP-IDF), BQ27427 fuel gauge + BQ25628 BMS
 **Companion:** [`fg_learning_sequence.md`](fg_learning_sequence.md) — the TRM-derived Impedance-Track sequence this workflow automates. Read it for the *why* behind each phase; this doc is the *operator + firmware flow*.
 
@@ -10,7 +10,7 @@ Define the **per-unit battery-learning workflow** that runs as the **end-of-line
 
 Every shipped unit learns and verifies its own fuel gauge; there is **no golden-image copy step**. The test must be trivial for a line operator: one button to start, then plug/unplug on cue, then read a pass/fail result.
 
-This document describes *behaviour and flow only* in Parts 1–2, then a concrete firmware design. It is the input to the coding pass.
+This document describes *behaviour and flow only* in Parts 1–2, then the firmware design that was built from it. (It was originally written as the input to the coding pass — see the as-built note above; treat the design half as a record of what shipped, not a to-do list.)
 
 ### Production reality (read this first)
 
@@ -54,6 +54,25 @@ No re-arming, no menu navigation between cycles, no manual reading of registers.
 10. *Operator plugs the charger back in.* Device boots.
 11. **Verify** — device reads the gauge's learned values and checks they pass the criteria below. On pass it records **"learning complete"** to flash and shows a success result.
 12. **Done forever** — on this and every future boot, the device sees "learning complete" + a healthy gauge and goes straight to **normal operation**. Learning never runs again unless an operator explicitly re-arms it.
+
+---
+
+## Why the EDV cutoff matters to the fuel gauge
+
+**EDV** = *end-of-discharge voltage* — the safe bottom-of-discharge point at which the device stops draining the cell and powers fully off (ship mode). In firmware it is the trip `EDV_SHIP_MV = 2900 mV` measured **under load**, debounced over `EDV_SHIP_DEBOUNCE_SAMPLES` polls (`go_power.h`); at 2.9 V under load the cell relaxes to ~3.0 V open-circuit once the BATFET opens — deliberately **above** the cell's DW01 hardware protector. This single cutoff does **two jobs at once**, and the fuel-gauge learn depends on both.
+
+**1. It is the bottom anchor of the learning cycle — cut the discharge short and the cycle does not learn.**
+Impedance-Track only *completes* a cycle if the discharge reaches deep depth-of-discharge. Everything the gauge captures at the bottom happens only as the cell approaches empty:
+- **OCV2** (the bottom open-circuit-voltage reading) is valid only once the cell is below `Q Invalid MinV` (3750 mV). The **OCV1 → OCV2** pair is what fixes **Qmax** — no valid bottom OCV, no Qmax update.
+- **Fast-Qmax** is computed at end-of-discharge once `DOD > Fast Qmax End DOD% (96 %)`.
+- The **low-SOC Ra grid points** are only measured while discharging down toward empty.
+
+(All three: see [`fg_learning_sequence.md`](fg_learning_sequence.md) Phases 3–4.) The gauge's own **Terminate Voltage** register (TRM SLUUCD5 §7.4.2.3.6, default 3200 mV) is where it forces `SOC → 0` and takes those bottom readings. The firmware EDV trip (2900 mV under load) sits **below** that 3200 mV, so a learning discharge passes *through* the gauge's bottom-of-discharge math **first**, then trips ship mode — the readings are captured, not skipped. Stop a discharge well above EDV and you ship a unit with an incomplete Ra grid and an unconfirmed Qmax: it fails verification (§7).
+
+**2. It is the guardrail that stops over-discharge from wiping everything just learned.**
+The gauge holds its learned Qmax + Ra in volatile state. A **POR / reset** sets `Flags[ITPOR]` and **wipes the learning** ([`fg_learning_sequence.md`](fg_learning_sequence.md) Phase 4, step 25; TRM §2.4.1/§2.4.2) — and a *deep over-discharge* is exactly what triggers a POR, when the cell sags far enough for the hardware protector to cut the pack. The EDV cutoff powers the device off in a **controlled** way at 2.9 V — above the protector threshold — so the cycle's learned data survives the power-off intact and the unit can auto-resume / verify on re-plug (§6). The EDV cutoff is therefore *the* mechanism that lets a multi-cycle learn span a ship-mode power-off without losing progress.
+
+**Net constraint (check this if you ever change a voltage):** the EDV ship cutoff must sit **below the gauge's Terminate Voltage** (so OCV2 / Fast-Qmax / the low-SOC Ra points are all captured first) **and above the cell's protector / brown-out** (so no POR wipes the learn). 2.9 V under load satisfies both today; move either the firmware trip or the gauge Terminate Voltage and you must re-check *both* inequalities. *(The shipped values — `EDV_SHIP_MV = 2900 mV` firmware-side and the gauge Terminate Voltage register — should be verified aligned on the actual board; this is one of the open items a successor should close.)*
 
 ---
 
@@ -123,7 +142,7 @@ The device declares learning **complete** only when, read back from the gauge:
 
 # Firmware design (state machine)
 
-This part turns the workflow above into a concrete firmware design: the persisted state, the state machine, the per-poll tick, the boot resume algorithm, and the exact existing symbols to reuse / extend. It is implementation-ready for a coding pass.
+This part turns the workflow above into a concrete firmware design: the persisted state, the state machine, the per-poll tick, the boot resume algorithm, and the existing symbols it reuses / extends. It was the implementation spec for the coding pass and is now an **as-built reference** — see the status note at the top. Code citations name the symbol and its file (no line numbers, which rot as the code moves); where a citation and the source disagree, the source wins.
 
 ## 1. State model
 
@@ -152,13 +171,13 @@ Persisted (NVS) alongside the existing `GoSettings` keys (`go_settings.{h,cpp}`)
 
 `blearn_cycle_target` is a compile-time constant (default **2**), not persisted.
 
-**Relationship to the existing toggle:** `GoSettings::battery_learning_enabled` (`go_settings.h:52`, non-persistent, admin opt-in) stays as the **per-session arming** for the *power dashboard / LOW_POWER UX*. The new **persisted** `blearn_stage` is what actually drives the multi-cycle run and auto-resume. Starting a run sets `blearn_stage = Charge, blearn_cycle = 1`; from then on the persisted stage is authoritative across reboots even though the session toggle is false after a cold boot.
+**Relationship to the existing toggle:** `GoSettings::battery_learning_enabled` (`go_settings.h`, non-persistent, admin opt-in) stays as the **per-session arming** for the *power dashboard / LOW_POWER UX*. The new **persisted** `blearn_stage` is what actually drives the multi-cycle run and auto-resume. Starting a run sets `blearn_stage = Charge, blearn_cycle = 1`; from then on the persisted stage is authoritative across reboots even though the session toggle is false after a cold boot.
 
 **Write discipline:** stage transitions write the single key via `ConfigStore::set_int` + `commit()` directly (not a full `save_go_settings()`), so the commit is prompt and the pre-ship-mode write is atomic. `GoSettings` caches the loaded values at boot for read.
 
 ## 2. Where it lives
 
-A small **`BlearnController`** owned by the orchestrator (peer to the existing learning handling in `go_orchestrator.cpp`). It is **driven, not autonomous**: the orchestrator already polls the BMS+FG on a timer (`on_bms_status_timer()` `go_orchestrator.cpp:380`, `on_bms_timer()` `:350`). Each poll passes the fresh `PowerSnapshot` to `BlearnController::tick(const PowerSnapshot&)`, which returns an action for the orchestrator to apply (it does not call hardware directly — keeps it testable host-side, unlike the current FG path which can't host-compile).
+A small **`BlearnController`** owned by the orchestrator (peer to the existing learning handling in `go_orchestrator.cpp`). It is **driven, not autonomous**: the orchestrator already polls the BMS+FG on a timer (`on_bms_status_timer()` / `on_bms_timer()` in `go_orchestrator.cpp`). Each poll passes the fresh `PowerSnapshot` to `BlearnController::tick(...)`, which returns an action for the orchestrator to apply (it does not call hardware directly — keeps it testable host-side, unlike the current FG path which can't host-compile).
 
 ```cpp
 struct BlearnAction {
@@ -174,31 +193,31 @@ BlearnAction BlearnController::tick(const PowerSnapshot&);
 
 ## 3. Required new surface
 
-1. **Expose FG learning flags on `PowerSnapshot`.** Today only `fg_flag_fc/chg/dsg` are exposed (`go_power.h:60-62`); `qmax_up / res_up / itpor / ocv_taken` are computed in the local `FgSnapshot` (`go_power.cpp:109-126`) and only logged. Add them to `PowerSnapshot` so `BlearnController` and the resume path can read them. *(Low-risk, mechanical.)*
-2. **Expose power source + learned-values read on the snapshot/verify path.** `PowerSnapshot` already carries charging state; ensure "external input present?" (plugged vs battery) is readable at boot. Verify uses `read_qmax_cell0()` / `read_ra_table()` / `read_design_capacity_mah()` (already added to `bq27427.h:115/125/102`).
+1. **Expose FG learning flags on `PowerSnapshot`.** *(Shipped.)* `fg_flag_fc/chg/dsg` plus `fg_qmax_up / fg_res_up / fg_itpor / fg_ocv_taken` are exposed on `PowerSnapshot` (`go_power.h`) and populated in `poll_bms()` (`go_power.cpp`), so `BlearnController` and the resume path read them directly.
+2. **Expose power source + learned-values read on the snapshot/verify path.** `PowerSnapshot` already carries charging state; ensure "external input present?" (plugged vs battery) is readable at boot. Verify uses `read_qmax_cell0()` / `read_ra_table()` / `read_design_capacity_mah()` (in `bq27427.h`).
 3. **`BlearnController`** (new) + its NVS load/save in `go_settings.{h,cpp}`.
 4. **Admin action** "Start battery learning" → `BlearnController::start()` (sets stage=Charge, cycle=1, commits).
-5. **Phase screens** — reuse `Screen::DischargeComplete` (`go_display.h:23`); add `Screen` values (or a single status screen with a phase string) for *Charging / Resting / Unplug charger / Verifying / Learning complete / Learning failed*.
-6. **Driver: `set_update_status_learning(bool enable)`** on `BQ27427` (new) — sets/clears Update Status bit0+bit1 (subclass 0x52, offset 2) via the existing UNSEAL→CFGUPDATE→block-write→checksum→SOFT_RESET path (mirror `configure_cell`). Set on cycle-1 `Charge` entry, clear on `Complete` (see §10.3). *(Driver `read_qmax_cell0`/`read_ra_table`/`read_design_capacity_mah` already exist: `bq27427.h:115/125/102`.)*
+5. **Phase screens** — reuse `Screen::DischargeComplete` (`go_display.h`); add `Screen` values (or a single status screen with a phase string) for *Charging / Resting / Unplug charger / Verifying / Learning complete / Learning failed*.
+6. **Driver: `set_update_status_learning(bool enable)`** on `BQ27427` (new) — sets/clears Update Status bit0+bit1 (subclass 0x52, offset 2) via the existing UNSEAL→CFGUPDATE→block-write→checksum→SOFT_RESET path (mirror `configure_cell`). Set on cycle-1 `Charge` entry, clear on `Complete` (see §10.3). *(Driver `read_qmax_cell0`/`read_ra_table`/`read_design_capacity_mah` already exist in `bq27427.h`.)*
 7. **Driver: `read_chem_id()` + `select_chemistry_4v2()`** on `BQ27427` (new) — read `Control(0x0008)`; if ≠ 1202, run `SET_CFGUPDATE`→`Control(0x0031)` (CHEM_B)→`SOFT_RESET`. Idempotent; called from first-boot config **before** any learn (see §10.1). Resets IT learning when it switches.
 
 ## 4. Per-poll tick (stage behaviour + exit)
 
 | Stage | Charge | Load (`low_power`) | Cue / screen | Advance when |
 |---|---|---|---|---|
-| `Charge` | ON, ICHG = `LEARNING_CHARGE_CURRENT_MA` (`go_orchestrator.cpp:449`) | n/a | "Charging…" | `fg.fc()` (Full Charge) → `Rest` |
-| `Rest` | OFF (`set_manual_charge_disabled(true)` `go_power.h:141`) | **low** (existing LOW_POWER gates, `go_orchestrator.cpp:466`) | "Resting…" | `fg.ocv_taken()` **and** rest ≥ `CHARGE_REST_TIMEOUT_MS` (500 s) → `Discharge` |
-| `Discharge` | OFF | **full** (release LOW_POWER) | **unplug cue** (`set_charge_done_alert(true)` `go_led.h:144`) + "Unplug charger" | `snap.edv_cutoff_reached` → `CycleDone` |
+| `Charge` | ON, ICHG = `LEARNING_CHARGE_CURRENT_MA` (`go_orchestrator.cpp`) | n/a | "Charging…" | `fg.fc()` (Full Charge) → `Rest` |
+| `Rest` | OFF (`set_manual_charge_disabled(true)`, `go_power.h`) | **low** (existing LOW_POWER gates in `go_orchestrator.cpp`) | "Resting…" | `fg.ocv_taken()` **and** rest ≥ `CHARGE_REST_TIMEOUT_MS` (500 s) → `Discharge` |
+| `Discharge` | OFF | **full** (release LOW_POWER) | **unplug cue** (`set_charge_done_alert(true)`, `go_led.h`) + "Unplug charger" | `snap.edv_cutoff_reached` → `CycleDone` |
 | `CycleDone` | — | — | "Discharge complete" | persist+commit → `trigger_edv_ship_mode()` (device off) |
 | `Verify` | OFF | low | "Verifying…" | criteria pass → `Complete`; fail & cycle ≥ cap → `Failed`; fail & < cap → `Charge`(next) |
 | `Complete` | normal | normal | success | terminal (normal operation) |
 | `Failed` | normal | normal | failure | terminal (await re-arm) |
 
-Note the load polarity is the **only** behavioural subtlety: `Rest` wants quiet load (LOW_POWER on), `Discharge` wants full load (LOW_POWER off). The existing gate already keys on `plugged_in` (`go_orchestrator.cpp:465`), which matches: plugged during Rest, unplugged during Discharge. `BlearnController` makes that explicit per-stage rather than implicit in plug state.
+Note the load polarity is the **only** behavioural subtlety: `Rest` wants quiet load (LOW_POWER on), `Discharge` wants full load (LOW_POWER off). The existing gate already keys on `plugged_in` (in `go_orchestrator.cpp`), which matches: plugged during Rest, unplugged during Discharge. `BlearnController` makes that explicit per-stage rather than implicit in plug state.
 
 ## 5. EDV ordering (the one hard-ordering rule)
 
-Extend `handle_edv_cutoff()` (`go_orchestrator.cpp:1199`) for the blearn case:
+Extend `handle_edv_cutoff()` (`go_orchestrator.cpp`) for the blearn case:
 
 ```
 on edv_cutoff_reached while blearn_stage == Discharge:
@@ -212,7 +231,7 @@ A lost commit must **not** lead to ship-mode (keep discharging, retry) — other
 
 ## 6. Boot resume algorithm
 
-Run once at boot, after `load_go_settings()` (`go_settings.cpp:66`) and one `poll_bms()` for fresh FG flags + power source.
+Run once at boot, after `load_go_settings()` (`go_settings.cpp`) and one `poll_bms()` for fresh FG flags + power source.
 
 ```
 intact      = (fg.itpor == 0) && fg.qmax_up        // learning present, no POR
@@ -280,6 +299,6 @@ Because every unit must verify as learned to ship, three gauge-side settings mus
    - A heavy bench load (~2 A) does cross the threshold but self-heats the cell to **~56 °C** → corrupts the 25 °C-normalized grid *and* risks the 60 °C thermal ship-mode trip.
    - **Target a moderate discharge (~C/10–C/5, roughly 200–400 mA) that clears the threshold while staying near room temperature.** Candidate knobs: keep more rails on during discharge to raise the device's own draw; OR **lower the gauge's Dsg Current Threshold register** (`DC/(reg×0.1)`) so the device's own ~60 mA qualifies as DISCHARGE (cheapest — config write, no heat, no bench load). Decide and bench-confirm before relying on the test.
 
-3. **Set Update Status bit0+bit1 at the start of each unit's learn; clear at completion.** For a from-scratch learn the per-update change limits (Max Qmax Change, Ra Max Delta, etc.) must be lifted so Qmax and the whole Ra grid can move freely in as few cycles as possible (`fg_learning_sequence.md:55`). This likely matters as much as the load for getting the mid/high-SOC grid to move in one cycle. In the FSM: set the bits on `Charge`-entry of cycle 1 (subclass 0x52, offset 2, via the existing UNSEAL→CFGUPDATE→commit path used by `configure_cell`); clear them on transition to `Complete` (`fg_learning_sequence.md:93`) so the shipped unit uses normal bounded field-refinement limits.
+3. **Set Update Status bit0+bit1 at the start of each unit's learn; clear at completion.** For a from-scratch learn the per-update change limits (Max Qmax Change, Ra Max Delta, etc.) must be lifted so Qmax and the whole Ra grid can move freely in as few cycles as possible ([`fg_learning_sequence.md`](fg_learning_sequence.md) Phase 0, step 4). This likely matters as much as the load for getting the mid/high-SOC grid to move in one cycle. In the FSM: set the bits on `Charge`-entry of cycle 1 (subclass 0x52, offset 2, via the existing UNSEAL→CFGUPDATE→commit path used by `configure_cell`); clear them on transition to `Complete` ([`fg_learning_sequence.md`](fg_learning_sequence.md) Phase 6, step 26) so the shipped unit uses normal bounded field-refinement limits.
 
 Order: **chem first** (it resets learning), then load + change-limits. Resolving these three is what determines whether the production test is **1 cycle (feasible) or ≥2 cycles (twice the line time)** — and whether "pass" actually means learned. Background + thresholds: [`fg_learning_sequence.md`](fg_learning_sequence.md); chem mechanism cited against TRM SLUUCD5 pp. 7, 18, 23, 46, 49.
