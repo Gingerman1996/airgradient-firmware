@@ -83,6 +83,12 @@ void SensorProducer::request_low_power(bool on) {
   }
 }
 
+void SensorProducer::request_pm_sleep() {
+  if (_task_handle != nullptr) {
+    RTOS::task_notify_send(_task_handle, NOTIFY_PM_SLEEP);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Task entry point (static)
 // ---------------------------------------------------------------------------
@@ -149,6 +155,8 @@ void SensorProducer::run() {
         // Re-anchor sampler cadence so we don't immediately fire a tick
         // for the time we spent in low-power mode.
         next_tick_ms = static_cast<uint32_t>(RTOS::get_time_ms()) + SAMPLER_TICK_MS;
+      } else if (notify_value == NOTIFY_PM_SLEEP) {
+        handle_pm_sleep();
       } else {
         handle_measurement(notify_value);
       }
@@ -180,7 +188,9 @@ void SensorProducer::handle_calibration() {
 }
 
 void SensorProducer::handle_prepare() {
-  AG_LOGI(TAG, "PM prepare: warming up after power-on");
+  // Pre-wake path: SensorManager::warmup() wakes the PM sensor (pm_wake() at
+  // its start) before the warmup discard reads, so prepare = wake + warmup.
+  AG_LOGI(TAG, "PM prepare: waking + warming up PM sensor");
   _manager.warmup();
   AG_LOGI(TAG, "PM prepare: complete");
 }
@@ -252,4 +262,11 @@ void SensorProducer::handle_low_power(bool on) {
   AG_LOGI(TAG, "low_power: %s", on ? "ON" : "OFF");
   _manager.set_co2_low_power(on);
   _low_power_active = on;
+}
+
+void SensorProducer::handle_pm_sleep() {
+  AG_LOGI(TAG, "PM sleep: parking PM sensor");
+  if (!_manager.pm_sleep()) {
+    AG_LOGW(TAG, "PM sleep: pm_sleep() reported an error");
+  }
 }

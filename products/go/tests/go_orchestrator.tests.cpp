@@ -34,6 +34,7 @@ extern uint8_t last_iterations;
 extern SensorGroup last_groups;
 extern bool co2_calibration_requested;
 extern bool prepare_requested;
+extern bool pm_sleep_requested;
 
 extern bool gps_started;
 extern bool gps_stopped;
@@ -260,6 +261,7 @@ public:
   static void reschedule_sensor_timer(Orchestrator &o, const GoSettings &prev) {
     o.reschedule_sensor_timer(prev);
   }
+  static void set_in_learning_low_power(Orchestrator &o, bool v) { o._in_learning_low_power = v; }
 };
 
 using A = OrchestratorTestAccess;
@@ -2622,38 +2624,39 @@ struct PmSleepFixture {
   Orchestrator make_orchestrator() { return {nullptr, services, settings, mock_config, "TEST00"}; }
 };
 
-TEST_CASE("PM sleep: on_sensor_data powers off PM for Portable + long interval",
+TEST_CASE("PM sleep: on_sensor_data sleeps PM for Portable + long interval",
           "[Orchestrator][pm_sleep]") {
   PmSleepFixture f;
   f.settings.measure_interval_seconds = 60;
   auto orch = f.make_orchestrator();
   orch.init(WakeCause::PowerOn);
 
+  test_spy::pm_sleep_requested = false;
   test_spy::pm_power_set = false;
 
   MeasuresAGo data{};
   A::on_sensor_data(orch, data);
 
-  CHECK(test_spy::pm_power_set);
-  CHECK_FALSE(test_spy::pm_power_on);
+  CHECK(test_spy::pm_sleep_requested);  // SPS30 parked via I2C Sleep
+  CHECK_FALSE(test_spy::pm_power_set);  // no GPIO power toggle — sensor stays powered
 }
 
-TEST_CASE("PM sleep: on_sensor_data does NOT power off PM for short interval",
+TEST_CASE("PM sleep: on_sensor_data does NOT sleep PM for short interval",
           "[Orchestrator][pm_sleep]") {
   PmSleepFixture f;
   f.settings.measure_interval_seconds = 10; // below threshold
   auto orch = f.make_orchestrator();
   orch.init(WakeCause::PowerOn);
 
-  test_spy::pm_power_set = false;
+  test_spy::pm_sleep_requested = false;
 
   MeasuresAGo data{};
   A::on_sensor_data(orch, data);
 
-  CHECK_FALSE(test_spy::pm_power_set);
+  CHECK_FALSE(test_spy::pm_sleep_requested); // continuous interval keeps PM awake
 }
 
-TEST_CASE("PM sleep: on_sensor_data does NOT power off PM in Offline mode",
+TEST_CASE("PM sleep: on_sensor_data does NOT sleep PM in Offline mode",
           "[Orchestrator][pm_sleep]") {
   PmSleepFixture f;
   f.settings.measure_interval_seconds = 60;
@@ -2661,42 +2664,41 @@ TEST_CASE("PM sleep: on_sensor_data does NOT power off PM in Offline mode",
   auto orch = f.make_orchestrator();
   orch.init(WakeCause::PowerOn);
 
-  test_spy::pm_power_set = false;
+  test_spy::pm_sleep_requested = false;
 
   MeasuresAGo data{};
   A::on_sensor_data(orch, data);
 
-  CHECK_FALSE(test_spy::pm_power_set);
+  CHECK_FALSE(test_spy::pm_sleep_requested);
 }
 
-TEST_CASE("PM sleep: on_sensor_data powers off PM in Stationary mode", "[Orchestrator][pm_sleep]") {
+TEST_CASE("PM sleep: on_sensor_data sleeps PM in Stationary mode", "[Orchestrator][pm_sleep]") {
   PmSleepFixture f;
   f.settings.measure_interval_seconds = 60;
   f.settings.operating_mode = OperatingMode::Stationary;
   auto orch = f.make_orchestrator();
   orch.init(WakeCause::PowerOn);
 
-  test_spy::pm_power_set = false;
+  test_spy::pm_sleep_requested = false;
 
   MeasuresAGo data{};
   A::on_sensor_data(orch, data);
 
-  CHECK(test_spy::pm_power_set);
-  CHECK_FALSE(test_spy::pm_power_on);
+  CHECK(test_spy::pm_sleep_requested);
 }
 
-TEST_CASE("PM sleep: mode change always powers on PM", "[Orchestrator][pm_sleep]") {
+TEST_CASE("PM sleep: mode change wakes PM via prepare", "[Orchestrator][pm_sleep]") {
   PmSleepFixture f;
   f.settings.measure_interval_seconds = 60;
   auto orch = f.make_orchestrator();
   orch.init(WakeCause::PowerOn);
 
+  test_spy::prepare_requested = false;
   test_spy::pm_power_set = false;
-  test_spy::pm_power_on = false;
 
   A::change_mode(orch, OperatingMode::Stationary);
-  CHECK(test_spy::pm_power_set);
-  CHECK(test_spy::pm_power_on);
+  CHECK(test_spy::prepare_requested); // prepare wakes + warms the SPS30
+  CHECK_FALSE(test_spy::pm_power_set);
 }
 
 TEST_CASE("PM sleep: check_timers fires prepare at warmup deadline", "[Orchestrator][pm_sleep]") {
@@ -2713,9 +2715,8 @@ TEST_CASE("PM sleep: check_timers fires prepare at warmup deadline", "[Orchestra
 
   A::check_timers(orch);
 
-  CHECK(test_spy::prepare_requested);
-  CHECK(test_spy::pm_power_set);
-  CHECK(test_spy::pm_power_on);
+  CHECK(test_spy::prepare_requested);  // prepare wakes (pm_wake) + warms the SPS30
+  CHECK_FALSE(test_spy::pm_power_set); // no GPIO toggle — sensor stays powered
   CHECK(A::pm_prepare_sent(orch));
 }
 
@@ -2753,7 +2754,7 @@ TEST_CASE("PM sleep: check_timers skips prepare for short interval", "[Orchestra
   CHECK_FALSE(test_spy::prepare_requested);
 }
 
-TEST_CASE("PM sleep: reschedule powers off PM when interval increases above threshold",
+TEST_CASE("PM sleep: reschedule above threshold leaves sleep to post-measure",
           "[Orchestrator][pm_sleep]") {
   PmSleepFixture f;
   f.settings.measure_interval_seconds = 10; // starts below threshold
@@ -2762,33 +2763,56 @@ TEST_CASE("PM sleep: reschedule powers off PM when interval increases above thre
 
   // Change interval to above threshold
   A::settings(orch).measure_interval_seconds = 60;
-  test_spy::pm_power_set = false;
+  test_spy::pm_sleep_requested = false;
+  test_spy::prepare_requested = false;
 
   GoSettings prev{};
   prev.measure_interval_seconds = 10;
   A::reschedule_sensor_timer(orch, prev);
 
-  CHECK(test_spy::pm_power_set);
-  CHECK_FALSE(test_spy::pm_power_on); // powered OFF
+  // No immediate action: the next post-measure cycle parks the SPS30, and
+  // pre-wake fires ahead of the following measurement.
+  CHECK_FALSE(test_spy::pm_sleep_requested);
+  CHECK_FALSE(test_spy::prepare_requested);
 }
 
-TEST_CASE("PM sleep: reschedule powers on PM when interval decreases below threshold",
+TEST_CASE("PM sleep: reschedule below threshold wakes PM via prepare",
           "[Orchestrator][pm_sleep]") {
   PmSleepFixture f;
   f.settings.measure_interval_seconds = 60; // starts above threshold
   auto orch = f.make_orchestrator();
   orch.init(WakeCause::PowerOn);
 
-  // Change interval to below threshold
+  // Change interval to below threshold (continuous — must stay awake)
   A::settings(orch).measure_interval_seconds = 10;
+  test_spy::prepare_requested = false;
   test_spy::pm_power_set = false;
 
   GoSettings prev{};
   prev.measure_interval_seconds = 60;
   A::reschedule_sensor_timer(orch, prev);
 
-  CHECK(test_spy::pm_power_set);
-  CHECK(test_spy::pm_power_on); // powered ON
+  CHECK(test_spy::prepare_requested); // wake + warm so the sensor is live
+  CHECK_FALSE(test_spy::pm_power_set);
+}
+
+TEST_CASE("PM sleep: Battery Learning LOW_POWER suppresses normal post-measure sleep",
+          "[Orchestrator][pm_sleep]") {
+  PmSleepFixture f;
+  f.settings.measure_interval_seconds = 60; // would normally sleep the PM sensor
+  auto orch = f.make_orchestrator();
+  orch.init(WakeCause::PowerOn);
+
+  // Learning already parked the SPS30 via its own request_pm_sleep; the
+  // normal post-measure path must not fire a second sleep request (PM is
+  // stripped from the measurement mask while learning).
+  A::set_in_learning_low_power(orch, true);
+  test_spy::pm_sleep_requested = false;
+
+  MeasuresAGo data{};
+  A::on_sensor_data(orch, data);
+
+  CHECK_FALSE(test_spy::pm_sleep_requested); // post-measure sleep no-ops during learning
 }
 
 // ============================================================================

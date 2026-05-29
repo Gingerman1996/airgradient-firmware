@@ -88,6 +88,12 @@ public:
   /// Used by the orchestrator during fuel-gauge learning RELAX phases.
   void request_low_power(bool on);
 
+  /// Park the PM sensor in its Sleep state (SPS30: ~55 mA -> ~38 µA).
+  /// Non-blocking: returns immediately. The task runs SensorManager::pm_sleep()
+  /// on its next loop iteration. The PM sensor is woken again by the next
+  /// request_prepare() (whose warmup wakes it before reading).
+  void request_pm_sleep();
+
 private:
   SensorManager &_manager;
   RtosQueueHandle _event_queue;
@@ -125,6 +131,9 @@ private:
   static constexpr uint32_t NOTIFY_LOW_POWER_ON = UINT32_MAX - 2;
   static constexpr uint32_t NOTIFY_LOW_POWER_OFF = UINT32_MAX - 3;
 
+  /// Sentinel notification value that parks the PM sensor in Sleep.
+  static constexpr uint32_t NOTIFY_PM_SLEEP = UINT32_MAX - 4;
+
   /// Tracked inside the task only. When true the sampler tick is skipped
   /// and the SCD4x is idle.
   bool _low_power_active = false;
@@ -142,4 +151,5 @@ private:
   void handle_measurement(uint32_t notify_value);
   void handle_sampler_tick();
   void handle_low_power(bool on);
+  void handle_pm_sleep();
 };

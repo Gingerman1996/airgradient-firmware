@@ -51,10 +51,25 @@ public:
   bool supports_temp_hum() const override;
   TempHumData temp_hum_data() override;
 
+  /// Park the sensor in its low-power Sleep state (~38 µA vs ~55 mA active).
+  /// Sleep can only be entered from Idle, so an in-progress measurement is
+  /// stopped first.  Requires Sensirion SPS30 firmware >= 2.0.
+  /// @return true if the Sleep command was acknowledged.
+  bool enter_sleep() override;
+
+  /// Wake the sensor from Sleep and resume measurement.  The I2C interface is
+  /// disabled in Sleep, so the Wake-Up command is sent twice: the first
+  /// re-activates the interface (and is otherwise ignored), the second
+  /// completes the wake.  The sensor lands in Idle, then Start Measurement is
+  /// re-issued so the subsequent warmup reads work (read() never auto-starts).
+  /// @return true if the sensor was woken and measuring.
+  bool exit_sleep() override;
+
 private:
   i2c_master_bus_handle_t _i2c_bus;
   i2c_master_dev_handle_t _dev_handle;
   bool _measuring;
+  bool _sleeping = false;
 
   // I2C configuration
   static constexpr uint8_t I2C_ADDRESS = 0x69;
@@ -66,7 +81,14 @@ private:
   static constexpr uint16_t CMD_STOP_MEASUREMENT = 0x0104;
   static constexpr uint16_t CMD_READ_DATA_READY = 0x0202;
   static constexpr uint16_t CMD_READ_MEASUREMENT = 0x0300;
+  static constexpr uint16_t CMD_SLEEP = 0x1001; // FW >= 2.0; enter from Idle only
+  static constexpr uint16_t CMD_WAKE = 0x1103;  // FW >= 2.0; send twice to re-activate I2C
   static constexpr uint16_t CMD_RESET = 0xD304;
+
+  // Wake-up re-activation window is ~100 ms after the first (ignored) Wake-Up
+  // command; the two transmissions stay back-to-back, then a short settle so
+  // the sensor is fully in Idle before a Start Measurement follows.
+  static constexpr int WAKE_SETTLE_MS = 5;
 
   // Measurement data: 10 floats x 6 bytes each (2 data + 1 CRC per word, 2 words per float)
   static constexpr uint16_t MEASUREMENT_BUFFER_SIZE = 60;

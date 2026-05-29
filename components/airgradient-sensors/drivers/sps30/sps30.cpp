@@ -238,6 +238,69 @@ bool SPS30::_stop_measurement() {
   return true;
 }
 
+bool SPS30::enter_sleep() {
+  if (_dev_handle == nullptr) {
+    ESP_LOGE(TAG, "enter_sleep: device not initialized");
+    return false;
+  }
+  if (_sleeping) {
+    return true;
+  }
+
+  // Sleep can only be entered from Idle — stop any active measurement first.
+  if (_measuring) {
+    if (!_stop_measurement()) {
+      ESP_LOGE(TAG, "enter_sleep: stop measurement failed, cannot enter Sleep");
+      return false;
+    }
+  }
+
+  if (!_write_command(CMD_SLEEP)) {
+    ESP_LOGE(TAG, "enter_sleep: Sleep command (0x%04X) failed", CMD_SLEEP);
+    return false;
+  }
+
+  _sleeping = true;
+  ESP_LOGI(TAG, "SPS30 entered Sleep");
+  return true;
+}
+
+bool SPS30::exit_sleep() {
+  if (_dev_handle == nullptr) {
+    ESP_LOGE(TAG, "exit_sleep: device not initialized");
+    return false;
+  }
+  if (!_sleeping) {
+    return true;
+  }
+
+  // The I2C interface is disabled in Sleep.  Send the Wake-Up command twice
+  // back-to-back: the first transmission re-activates the interface and is
+  // otherwise ignored (so its I2C error is expected and tolerated), the second
+  // completes the wake.  Keep them tight — there is a ~100 ms re-activation
+  // window per the datasheet (§6.3.6).
+  (void)_write_command(CMD_WAKE);
+  if (!_write_command(CMD_WAKE)) {
+    ESP_LOGE(TAG, "exit_sleep: second Wake-Up command (0x%04X) failed", CMD_WAKE);
+    return false;
+  }
+
+  RTOS::delay_ms(WAKE_SETTLE_MS);
+  _sleeping = false;
+
+  // After wake the sensor is in Idle.  Re-enter measurement so the subsequent
+  // warmup discard-reads and the next read() work — read() relies on
+  // _measuring being true and never auto-starts.  This mirrors the previous
+  // power-cycle resume, where init(skip_reset) re-ran _start_measurement().
+  if (!_start_measurement()) {
+    ESP_LOGE(TAG, "exit_sleep: start measurement failed after wake");
+    return false;
+  }
+
+  ESP_LOGI(TAG, "SPS30 woken (measuring)");
+  return true;
+}
+
 uint8_t SPS30::_calc_crc8(const uint8_t *data, uint8_t len) {
   uint8_t crc = 0xFF;
   for (uint8_t i = 0; i < len; i++) {

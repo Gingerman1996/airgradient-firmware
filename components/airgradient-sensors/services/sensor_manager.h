@@ -157,6 +157,21 @@ public:
   /// state CO2 sensor draw during fuel-gauge learning RELAX phases.
   void set_co2_low_power(bool on);
 
+  /// Park the wired PM sensor(s) in their lowest-power Sleep state.
+  /// Forwards PMSensor::sleep() to pms_a (and pms_b when wired).
+  /// @return true when there is no PM sensor to sleep (nothing to do) or
+  ///         every wired PM sensor acknowledged Sleep; false if any wired
+  ///         sensor reported a Sleep error.
+  bool pm_sleep();
+
+  /// Wake the wired PM sensor(s) from Sleep back to a measuring state.
+  /// Forwards PMSensor::wake() to pms_a (and pms_b when wired).  Called at
+  /// the start of warmup() so the sensor is live before the warmup reads;
+  /// the orchestrator may also call it directly ahead of a prepare.
+  /// @return true when there is no PM sensor (nothing to do) or every wired
+  ///         PM sensor acknowledged Wake; false if any wired sensor errored.
+  bool pm_wake();
+
 private:
   Sensors &_sensors;
 

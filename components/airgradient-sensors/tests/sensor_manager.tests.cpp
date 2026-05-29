@@ -58,6 +58,18 @@ public:
   IMPLEMENT_MOCK0(temp_hum_data);
 };
 
+// PM sensor mock that also intercepts enter_sleep()/exit_sleep() (the no-op
+// defaults on the base PMSensor would otherwise pass through silently).
+class MockSleepablePMSensor : public trompeloeil::mock_interface<PMSensor> {
+public:
+  IMPLEMENT_MOCK1(init);
+  IMPLEMENT_MOCK1(read);
+  IMPLEMENT_CONST_MOCK0(supports_temp_hum);
+  IMPLEMENT_MOCK0(temp_hum_data);
+  IMPLEMENT_MOCK0(enter_sleep);
+  IMPLEMENT_MOCK0(exit_sleep);
+};
+
 class MockTVOCNOxSensor : public trompeloeil::mock_interface<TVOCNOxSensor> {
 public:
   IMPLEMENT_MOCK0(init);
@@ -2066,4 +2078,83 @@ TEST_CASE("Gas index algorithm", "[SensorManager]") {
     REQUIRE(result.tvoc_nox.nox_index == MeasuresInvalid::NOX);
     REQUIRE(result.tvoc_nox.nox_raw == MeasuresInvalid::NOX);
   }
+}
+
+TEST_CASE("PM sleep/wake forwarding", "[SensorManager]") {
+  MockSleepablePMSensor mock_pm_a;
+  MockSleepablePMSensor mock_pm_b;
+
+  SECTION("pm_sleep forwards to pms_a only when pms_b null") {
+    Sensors sensors{};
+    sensors.pms_a = &mock_pm_a;
+    sensors.pms_b = nullptr;
+    SensorManager manager(sensors);
+
+    REQUIRE_CALL(mock_pm_a, enter_sleep()).RETURN(true);
+    REQUIRE(manager.pm_sleep());
+  }
+
+  SECTION("pm_sleep forwards to both PM sensors") {
+    Sensors sensors{};
+    sensors.pms_a = &mock_pm_a;
+    sensors.pms_b = &mock_pm_b;
+    SensorManager manager(sensors);
+
+    REQUIRE_CALL(mock_pm_a, enter_sleep()).RETURN(true);
+    REQUIRE_CALL(mock_pm_b, enter_sleep()).RETURN(true);
+    REQUIRE(manager.pm_sleep());
+  }
+
+  SECTION("pm_sleep returns false when any sensor errors") {
+    Sensors sensors{};
+    sensors.pms_a = &mock_pm_a;
+    sensors.pms_b = &mock_pm_b;
+    SensorManager manager(sensors);
+
+    // pms_a errors; both are still attempted (no short-circuit on the spy side)
+    ALLOW_CALL(mock_pm_a, enter_sleep()).RETURN(false);
+    ALLOW_CALL(mock_pm_b, enter_sleep()).RETURN(true);
+    REQUIRE_FALSE(manager.pm_sleep());
+  }
+
+  SECTION("pm_sleep is a no-op true when no PM sensor wired") {
+    Sensors sensors{};
+    sensors.pms_a = nullptr;
+    sensors.pms_b = nullptr;
+    SensorManager manager(sensors);
+
+    REQUIRE(manager.pm_sleep());
+  }
+
+  SECTION("pm_wake forwards to the wired PM sensor") {
+    Sensors sensors{};
+    sensors.pms_a = &mock_pm_a;
+    sensors.pms_b = nullptr;
+    SensorManager manager(sensors);
+
+    REQUIRE_CALL(mock_pm_a, exit_sleep()).RETURN(true);
+    REQUIRE(manager.pm_wake());
+  }
+}
+
+TEST_CASE("warmup wakes the PM sensor before reads", "[SensorManager]") {
+  MockSleepablePMSensor mock_pm_a;
+  MockRTOS mock_rtos;
+  RTOS::set_instance(&mock_rtos);
+  ALLOW_CALL(mock_rtos, get_time_ms_impl()).RETURN(0);
+  ALLOW_CALL(mock_rtos, delay_ms_impl(trompeloeil::_));
+
+  Sensors sensors{};
+  sensors.pms_a = &mock_pm_a;
+  sensors.tvoc_nox = nullptr;
+  SensorManager manager(sensors);
+
+  // Sequence: exit_sleep() must precede any warmup discard read().
+  trompeloeil::sequence seq;
+  REQUIRE_CALL(mock_pm_a, exit_sleep()).IN_SEQUENCE(seq).RETURN(true);
+  REQUIRE_CALL(mock_pm_a, read(trompeloeil::_)).IN_SEQUENCE(seq).TIMES(AT_LEAST(1)).RETURN(true);
+
+  manager.warmup();
+
+  RTOS::set_instance(nullptr);
 }

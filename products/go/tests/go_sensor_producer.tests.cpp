@@ -47,6 +47,8 @@ public:
   IMPLEMENT_MOCK1(read);
   IMPLEMENT_CONST_MOCK0(supports_temp_hum);
   IMPLEMENT_MOCK0(temp_hum_data);
+  IMPLEMENT_MOCK0(enter_sleep);
+  IMPLEMENT_MOCK0(exit_sleep);
 };
 
 class MockTVOCNOxSensor : public trompeloeil::mock_interface<TVOCNOxSensor> {
@@ -104,6 +106,7 @@ public:
   void handle_prepare() { _p.handle_prepare(); }
   void handle_measurement(uint32_t v) { _p.handle_measurement(v); }
   void handle_sampler_tick() { _p.handle_sampler_tick(); }
+  void handle_pm_sleep() { _p.handle_pm_sleep(); }
   void run() { _p.run(); }
 
   static uint32_t encode_notify(uint8_t iterations, SensorGroup groups) {
@@ -178,12 +181,23 @@ TEST_CASE("SensorProducer handlers", "[SensorProducer]") {
   // handle_prepare
   // -----------------------------------------------------------------------
 
-  SECTION("handle_prepare calls warmup") {
-    // warmup() calls warmup_step() in a loop — expect conditioning + PM reads
+  SECTION("handle_prepare wakes PM then warms up") {
+    // warmup() wakes the PM sensor first, then calls warmup_step() in a loop —
+    // expect exit_sleep + conditioning + PM reads.
+    REQUIRE_CALL(mock_pm, exit_sleep()).RETURN(true);
     REQUIRE_CALL(mock_tvoc_nox, run_conditioning()).TIMES(AT_LEAST(1)).RETURN(true);
     ALLOW_CALL(mock_pm, read(trompeloeil::_)).RETURN(false);
 
     access.handle_prepare();
+  }
+
+  // -----------------------------------------------------------------------
+  // handle_pm_sleep
+  // -----------------------------------------------------------------------
+
+  SECTION("handle_pm_sleep parks the PM sensor") {
+    REQUIRE_CALL(mock_pm, enter_sleep()).RETURN(true);
+    access.handle_pm_sleep();
   }
 
   // -----------------------------------------------------------------------
@@ -374,6 +388,9 @@ TEST_CASE("SensorProducer run()", "[SensorProducer]") {
 
   SensorProducer producer(manager, nullptr, {});
   SensorProducerTestAccess access(producer);
+
+  // run() begins with warmup(), which wakes the PM sensor before its reads.
+  ALLOW_CALL(mock_pm, exit_sleep()).RETURN(true);
 
   SECTION("run enables sampler when SGP41 is wired") {
     // Warmup: conditioning + PM reads

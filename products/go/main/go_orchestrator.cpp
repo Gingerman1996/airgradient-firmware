@@ -267,10 +267,9 @@ void Orchestrator::check_timers() {
 
   // --- PM pre-wake timer (fires warmup_duration before next measurement) ---
   uint32_t interval = static_cast<uint32_t>(_settings.measure_interval_seconds) * 1000;
-  // In Battery Learning LOW_POWER the SPS30's +5 V rail is held off via PMID
-  // PassThrough — pre-waking it would spike idle current and the next
-  // measurement skips PM anyway.  Drop the whole pre-wake path while
-  // low-power is active.
+  // In Battery Learning LOW_POWER the SPS30 is parked in Sleep and the next
+  // measurement skips PM anyway — pre-waking it would spike idle current.
+  // Drop the whole pre-wake path while low-power is active.
   bool pm_sleep_eligible =
       _mode != OperatingMode::Offline && !_in_learning_low_power &&
       _svc.power_service.should_sleep_pm_sensor(interval);
@@ -278,8 +277,9 @@ void Orchestrator::check_timers() {
     uint32_t measure_deadline = _last_measurement_ms + interval;
     uint32_t prepare_deadline = measure_deadline - CONFIG_SENSOR_WARMUP_DURATION_MS;
     if ((now - prepare_deadline) < MAX_REASONABLE_TIMEOUT_MS) {
-      AG_LOGI(TAG, "PM pre-wake: powering on and requesting prepare");
-      _svc.power_service.set_pm_power(true);
+      // prepare wakes the SPS30 from Sleep (pm_wake at the start of warmup)
+      // then warms it up — no GPIO power toggle, the sensor stays powered.
+      AG_LOGI(TAG, "PM pre-wake: requesting prepare (wake + warmup)");
       _svc.sensor_producer.request_prepare();
       _pm_prepare_sent = true;
     }
@@ -477,24 +477,29 @@ void Orchestrator::on_bms_status_timer() {
     // ship-mode cutoff (2.9 V) where the relaxed OCV2 is taken.
     const bool want_low_power = learning_ux_enabled && plugged_in;
     if (want_low_power && !_in_learning_low_power) {
-      AG_LOGI(TAG, "battery learning: entering LOW_POWER (SPS30 off, PMID off, PM skip, "
+      AG_LOGI(TAG, "battery learning: entering LOW_POWER (SPS30 sleep, PM skip, "
                    "GPS sleep %u h, BLE deinit, SCD4x idle, SGP41 sampler off)",
               LEARNING_GPS_SLEEP_MS / 3600000U);
-      _svc.power_service.set_pm_power(false);
-      _svc.power_service.set_force_pmid_passthrough(true);
+      // On v0.3 the +5 V PMID rail can't be collapsed in firmware (BMS keeps
+      // EN_OTG armed), so the SPS30 itself drops to ~38 µA via its I2C Sleep
+      // command.  check_timers() still strips PM from the request mask while
+      // _in_learning_low_power, so nothing wakes it until learning exits.
+      _svc.sensor_producer.request_pm_sleep();
       _svc.gps_service.sleep_for_ms(LEARNING_GPS_SLEEP_MS);
       _svc.sensor_producer.request_low_power(true);
       _svc.ble_service.deinit();
       _in_learning_low_power = true;
     } else if (!want_low_power && _in_learning_low_power) {
-      AG_LOGI(TAG, "battery learning: exiting LOW_POWER (SPS30 on, PMID auto-sync, GPS wake, "
+      AG_LOGI(TAG, "battery learning: exiting LOW_POWER (SPS30 wake, GPS wake, "
                    "BLE re-init, SCD4x periodic, SGP41 sampler on)");
-      _svc.power_service.set_pm_power(true);
-      _svc.power_service.set_force_pmid_passthrough(false);
+      // Clear the flag first so the prepare's wake+warmup isn't gated out by
+      // the LOW_POWER pre-wake guard in check_timers().
+      _in_learning_low_power = false;
       _svc.gps_service.wake_from_sleep();
       _svc.sensor_producer.request_low_power(false);
+      _svc.sensor_producer.request_prepare();
+      _pm_prepare_sent = true;
       init_ble_if_portable();
-      _in_learning_low_power = false;
     }
   }
 
@@ -509,14 +514,20 @@ void Orchestrator::reschedule_sensor_timer(const GoSettings &previous_settings) 
   }
   _last_measurement_ms = static_cast<uint32_t>(RTOS::get_time_ms());
 
-  // Reconcile PM power with the new interval.  Idempotent GPIO writes.
+  // Reconcile PM sleep/wake with the new interval.  The SPS30 stays powered;
+  // only its Sleep state changes.
+  //   - New interval >= threshold (>= 20 s): the sensor will be parked after
+  //     the next measurement (post-measure request_pm_sleep), and pre-wake
+  //     fires CONFIG_SENSOR_WARMUP_DURATION_MS ahead of it.  No action here.
+  //   - New interval < threshold (continuous): measurements are too close
+  //     together to absorb the ~10 s warmup, so the sensor must stay awake.
+  //     Wake it now via prepare (wake + warmup) in case it was sleeping.
   uint32_t new_interval_ms = static_cast<uint32_t>(_settings.measure_interval_seconds) * 1000;
-  if (_mode != OperatingMode::Offline &&
-      _svc.power_service.should_sleep_pm_sensor(new_interval_ms)) {
-    _svc.power_service.set_pm_power(false);
-  } else {
-    _svc.power_service.set_pm_power(true);
+  if (_mode != OperatingMode::Offline && !_in_learning_low_power &&
+      !_svc.power_service.should_sleep_pm_sensor(new_interval_ms)) {
+    _svc.sensor_producer.request_prepare();
   }
+  _pm_prepare_sent = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -631,10 +642,16 @@ void Orchestrator::on_sensor_data(const MeasuresAGo &data) {
   // Update BLE measures characteristic (always for READ; notifies when connected)
   _svc.ble_service.notify_measures(_cached_measures, _latest_gps, time(nullptr));
 
-  // Power off PM sensor after measurement when interval justifies power-cycling.
+  // Park the PM sensor in Sleep after measurement when the interval justifies
+  // it.  On v0.3 the +5 V PMID rail cannot be collapsed in firmware (BMS keeps
+  // EN_OTG armed), so the SPS30 itself drops to ~38 µA via its I2C Sleep
+  // command — the sensor stays powered, no GPIO toggle.  The next pre-wake
+  // (request_prepare) wakes and warms it before the following measurement.
+  // Skipped while learning owns the PM sensor (it parks it via request_low_power).
   uint32_t interval_ms = static_cast<uint32_t>(_settings.measure_interval_seconds) * 1000;
-  if (_mode != OperatingMode::Offline && _svc.power_service.should_sleep_pm_sensor(interval_ms)) {
-    _svc.power_service.set_pm_power(false);
+  if (_mode != OperatingMode::Offline && !_in_learning_low_power &&
+      _svc.power_service.should_sleep_pm_sensor(interval_ms)) {
+    _svc.sensor_producer.request_pm_sleep();
   }
 
   request_background_display_update();
@@ -959,9 +976,14 @@ void Orchestrator::change_mode(OperatingMode new_mode) {
 
   // Future: enable/disable WiFi, HTTP server based on mode
 
-  // Ensure PM sensor is powered on — covers mode change away from Portable
-  // while PM was power-cycled off.  Idempotent if already on.
-  _svc.power_service.set_pm_power(true);
+  // Ensure the PM sensor is awake and measuring after a mode change — it may
+  // have been parked in Sleep under the previous interval.  prepare wakes
+  // (pm_wake at warmup start) + warms it.  No-op effect if already awake.
+  // Skipped while learning owns the PM sensor.
+  if (_mode != OperatingMode::Offline && !_in_learning_low_power) {
+    _svc.sensor_producer.request_prepare();
+    _pm_prepare_sent = true;
+  }
 
   _svc.ui_manager.show_snackbar("Mode changed");
   update_display();
@@ -1315,25 +1337,26 @@ void Orchestrator::apply_blearn_action(const BlearnAction &action) {
   }
 
   // Load polarity (design §4): Rest wants quiet load (LOW_POWER on), Discharge
-  // wants full load (LOW_POWER off).  Drive the same rails the legacy learning
-  // UX toggles, keyed on the FSM's explicit per-stage request rather than on
-  // plug state.
+  // wants full load (LOW_POWER off).  On v0.3 the SPS30 is quieted via its I2C
+  // Sleep command (the +5 V PMID rail can't be collapsed in firmware), keyed on
+  // the FSM's explicit per-stage request rather than on plug state.
   if (action.low_power && !_in_learning_low_power) {
     AG_LOGI(TAG, "blearn: entering LOW_POWER (quiet load for OCV)");
-    _svc.power_service.set_pm_power(false);
-    _svc.power_service.set_force_pmid_passthrough(true);
+    _svc.sensor_producer.request_pm_sleep();
     _svc.gps_service.sleep_for_ms(LEARNING_GPS_SLEEP_MS);
     _svc.sensor_producer.request_low_power(true);
     _svc.ble_service.deinit();
     _in_learning_low_power = true;
   } else if (!action.low_power && _in_learning_low_power) {
     AG_LOGI(TAG, "blearn: exiting LOW_POWER (full load for discharge)");
-    _svc.power_service.set_pm_power(true);
-    _svc.power_service.set_force_pmid_passthrough(false);
+    // Clear the flag first so the prepare's wake+warmup isn't gated out by
+    // the LOW_POWER pre-wake guard in check_timers().
+    _in_learning_low_power = false;
     _svc.gps_service.wake_from_sleep();
     _svc.sensor_producer.request_low_power(false);
+    _svc.sensor_producer.request_prepare();
+    _pm_prepare_sent = true;
     init_ble_if_portable();
-    _in_learning_low_power = false;
   }
 
   // Unplug cue — reuse the LED8 charge-done blinker.

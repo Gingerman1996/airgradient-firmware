@@ -46,6 +46,11 @@ void SensorManager::warmup() {
     return;
   }
 
+  // Wake any sleeping PM sensor BEFORE the warmup reads — the discard reads
+  // below require the sensor to be live and measuring.  No-op for sensors
+  // without a Sleep mode (returns false) and for an already-awake sensor.
+  pm_wake();
+
   const int iterations = CONFIG_SENSOR_WARMUP_DURATION_MS / CONFIG_SENSOR_WARMUP_INTERVAL_MS;
   AG_LOGI(TAG, "warmup: %d iterations (%d ms interval)", iterations,
           CONFIG_SENSOR_WARMUP_INTERVAL_MS);
@@ -117,6 +122,28 @@ void SensorManager::set_co2_low_power(bool on) {
   if (_sensors.co2) {
     _sensors.co2->set_low_power(on);
   }
+}
+
+bool SensorManager::pm_sleep() {
+  bool ok = true;
+  if (_sensors.pms_a) {
+    ok = _sensors.pms_a->enter_sleep() && ok;
+  }
+  if (_sensors.pms_b) {
+    ok = _sensors.pms_b->enter_sleep() && ok;
+  }
+  return ok;
+}
+
+bool SensorManager::pm_wake() {
+  bool ok = true;
+  if (_sensors.pms_a) {
+    ok = _sensors.pms_a->exit_sleep() && ok;
+  }
+  if (_sensors.pms_b) {
+    ok = _sensors.pms_b->exit_sleep() && ok;
+  }
+  return ok;
 }
 
 Measures SensorManager::start_measures(int iterations, SensorGroup groups) {

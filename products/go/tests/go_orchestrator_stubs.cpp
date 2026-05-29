@@ -39,6 +39,7 @@ uint8_t last_iterations = 0;
 SensorGroup last_groups = SensorGroup::None;
 bool co2_calibration_requested = false;
 bool prepare_requested = false;
+bool pm_sleep_requested = false;
 
 // --- PowerService blearn verify ---
 PowerService::BlearnVerifyReadout blearn_verify_to_return{};
@@ -132,6 +133,7 @@ void reset() {
   last_iterations = 0;
   co2_calibration_requested = false;
   prepare_requested = false;
+  pm_sleep_requested = false;
 
   gps_started = false;
   gps_stopped = false;
@@ -237,6 +239,8 @@ void SensorProducer::request_co2_calibration() { test_spy::co2_calibration_reque
 void SensorProducer::request_prepare() { test_spy::prepare_requested = true; }
 
 void SensorProducer::request_low_power(bool /*low_power*/) {}
+
+void SensorProducer::request_pm_sleep() { test_spy::pm_sleep_requested = true; }
 
 // ============================================================================
 // GpsService stubs
