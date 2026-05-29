@@ -17,6 +17,7 @@
 #include "go_storage.h"
 #include "gps/gps_service.h"
 #include "nand_storage.h"
+#include "services/ag_client.h"
 #include "services/payload_cache.h"
 #include "services/sensor_manager.h"
 
@@ -101,6 +102,11 @@ public:
   bool update_watchdog() override { return true; }
   bool feature_ship_available() const override { return true; }
   bool enter_ship_mode() override { return true; }
+  bool configure_pmid_mode(BmsPmidMode) override { return true; }
+  bool set_pmid_enabled(bool) override { return true; }
+  bool set_charge_enable(bool) override { return true; }
+  bool set_charge_current_ma(uint16_t) override { return true; }
+  bool set_watchdog_timeout_ms(uint32_t) override { return true; }
 };
 
 // ============================================================================
@@ -191,6 +197,15 @@ public:
     init_bms();
   }
 
+  // Radio subsystem init.  CP1 does not exercise this from GoApp — it is
+  // driven by the orchestrator on Stationary entry — but the override
+  // must exist so MockBoard is concrete.
+  bool wifi_subsystem_init_called = false;
+  void init_wifi_subsystem() override {
+    call_log.push_back("init_wifi_subsystem");
+    wifi_subsystem_init_called = true;
+  }
+
   // Service accessors
   ConfigStore &config_store() override {
     call_log.push_back("config_store");
@@ -223,6 +238,32 @@ public:
     return _power;
   }
 
+  // Radio accessors return reinterpret_cast'd dummies.  CP1 production
+  // code never invokes these on MockBoard (Portable boots take only
+  // ble_server(), which goes through BleService stubs that ignore it).
+  // Stationary entry — which would dereference these — is not exercised
+  // until CP2.
+  WifiHal &wifi_hal() override {
+    call_log.push_back("wifi_hal");
+    return *reinterpret_cast<WifiHal *>(&_wifi_hal_buf);
+  }
+  WifiManager &wifi_manager() override {
+    call_log.push_back("wifi_manager");
+    return *reinterpret_cast<WifiManager *>(&_wifi_manager_buf);
+  }
+  HttpServer &http_server() override {
+    call_log.push_back("http_server");
+    return *reinterpret_cast<HttpServer *>(&_http_server_buf);
+  }
+  AgBleServer &ble_server() override {
+    call_log.push_back("ble_server");
+    return *reinterpret_cast<AgBleServer *>(&_ble_server_buf);
+  }
+  AgClient &ag_client() override {
+    call_log.push_back("ag_client");
+    return _ag_client;
+  }
+
   GpsDriver *new_gps_driver() override {
     call_log.push_back("new_gps_driver");
     new_gps_driver_called = true;
@@ -237,6 +278,7 @@ public:
     return reinterpret_cast<LP5036 *>(&_led_driver_buf);
   }
 
+  BoardVariant variant() const override { return BoardVariant::Prototype; }
   std::string serial_number() override { return "test-serial"; }
   const char *firmware_version() override { return "0.0.0-test"; }
   const gpio::Hal &gpio_hal() override { return stub_gpio_hal; }
@@ -538,6 +580,23 @@ TEST_CASE("build_wake_values: snapshot invalid -> defaults, unlocked") {
 }
 
 // ============================================================================
+// Tests: build_boot_splash_values
+// ============================================================================
+
+TEST_CASE("build_boot_splash_values: shows Booting on Screen::Info, locked") {
+  DisplayValues v = build_boot_splash_values();
+
+  CHECK(v.screen == Screen::Info);
+  REQUIRE(v.info_text != nullptr);
+  CHECK(std::string(v.info_text) == BOOT_SPLASH_TEXT);
+  CHECK(v.locked == true);
+  CHECK(v.display_off == false);
+  // Sensor sentinels stay untouched — Info does not render them.
+  CHECK(v.co2_ppm == MeasuresInvalid::CO2);
+  CHECK(v.pm25_ugm3 == MeasuresInvalid::PM);
+}
+
+// ============================================================================
 // Tests: execute_fast_path (via GoAppTestAccess)
 // ============================================================================
 
@@ -731,10 +790,11 @@ TEST_CASE("execute_fast_path: sleep path ordering — sensors before storage bef
 
   access.execute_fast_path(state, button);
 
-  // Full sleep path: sensors → storage → power (poll_bms) → display
+  // Full sleep path: power (set_pm_power) → sensors → storage → display
+  // power() is called before sensors() to arm PMID.
+  CHECK(board.call_index("power") < board.call_index("sensors"));
   CHECK(board.call_index("sensors") < board.call_index("storage"));
-  CHECK(board.call_index("storage") < board.call_index("power"));
-  CHECK(board.call_index("power") < board.call_index("display"));
+  CHECK(board.call_index("sensors") < board.call_index("display"));
 }
 
 TEST_CASE("execute_fast_path: release_gpio_holds after init_core") {

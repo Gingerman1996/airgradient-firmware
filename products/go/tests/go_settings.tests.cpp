@@ -114,6 +114,12 @@ TEST_CASE("load from empty store returns struct defaults", "[settings]") {
   REQUIRE(s.use_fahrenheit == false);
   REQUIRE(s.pm_use_usaqi == false);
   REQUIRE(s.auto_lock_seconds == 0);
+  REQUIRE(s.disable_cloud == false);
+  REQUIRE(s.static_ip.ip == 0);
+  REQUIRE(s.static_ip.netmask == 0);
+  REQUIRE(s.static_ip.gateway == 0);
+  REQUIRE(s.static_ip.dns_primary == 0);
+  REQUIRE(s.static_ip.dns_secondary == 0);
 }
 
 // ============================================================================
@@ -148,6 +154,45 @@ TEST_CASE("save then load round-trips all fields", "[settings]") {
   REQUIRE(loaded.use_fahrenheit == original.use_fahrenheit);
   REQUIRE(loaded.pm_use_usaqi == original.pm_use_usaqi);
   REQUIRE(loaded.auto_lock_seconds == original.auto_lock_seconds);
+}
+
+TEST_CASE("round-trip preserves disable_cloud and static_ip", "[settings][stationary]") {
+  FakeConfigStore store;
+
+  GoSettings original;
+  original.disable_cloud = true;
+  original.static_ip.ip = 0x0100A8C0;          // 192.168.0.1 (LE)
+  original.static_ip.netmask = 0x00FFFFFF;     // 255.255.255.0
+  original.static_ip.gateway = 0xFE00A8C0;     // 192.168.0.254
+  original.static_ip.dns_primary = 0x08080808; // 8.8.8.8
+  original.static_ip.dns_secondary = 0x04040808;
+
+  REQUIRE(save_go_settings(store, original));
+
+  GoSettings loaded = load_go_settings(store);
+  REQUIRE(loaded.disable_cloud == true);
+  REQUIRE(loaded.static_ip.ip == original.static_ip.ip);
+  REQUIRE(loaded.static_ip.netmask == original.static_ip.netmask);
+  REQUIRE(loaded.static_ip.gateway == original.static_ip.gateway);
+  REQUIRE(loaded.static_ip.dns_primary == original.static_ip.dns_primary);
+  REQUIRE(loaded.static_ip.dns_secondary == original.static_ip.dns_secondary);
+}
+
+TEST_CASE("static_ip == 0 round-trips as DHCP", "[settings][stationary]") {
+  // Re-provisioning DHCP must clear any previously stored static IP.
+  FakeConfigStore store;
+
+  GoSettings with_ip;
+  with_ip.static_ip.ip = 0x0100A8C0;
+  with_ip.static_ip.netmask = 0x00FFFFFF;
+  REQUIRE(save_go_settings(store, with_ip));
+
+  GoSettings dhcp;
+  REQUIRE(save_go_settings(store, dhcp));
+
+  GoSettings loaded = load_go_settings(store);
+  REQUIRE(loaded.static_ip.ip == 0);
+  REQUIRE(loaded.static_ip.netmask == 0);
 }
 
 TEST_CASE("round-trip preserves each GpsMode value", "[settings]") {

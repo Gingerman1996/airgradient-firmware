@@ -6,12 +6,11 @@ directly on the ESP-IDF Wi-Fi stack.
 
 ## Status
 
-`Scaffold` — the `WifiManager` service, `WifiHal` interface, and
+`Experimental` — the `WifiManager` service, `WifiHal` interface, and
 `EspWifiHal` driver are implemented and host-testable through a mock
 HAL. `products/reference` consumes it via `test_wifi.cpp` (STA scan,
-connect, static IP, mode-switch sweep) and `test_http_server.cpp`
-(SoftAP). No shipping product depends on it yet; see
-`wifi_interface_spec.md` for the original intent.
+connect, static IP, mode-switch sweep), `test_http_server.cpp`
+(SoftAP) and `airgradient-provisioning` component. No shipping product depends on it yet;
 
 ## Scope
 
@@ -19,6 +18,10 @@ This component owns:
 
 - Wi-Fi mode control (Off / STA / AP / APSTA)
 - STA connection lifecycle with hybrid auto-retry and exponential backoff
+- Saved-credentials connect via empty-SSID convention plus the
+  `has_saved_credentials()` query
+- Transient (non-persistent) connect via `WifiStaConfig::persist = false`
+  for factory-default fallback flows
 - Async Wi-Fi scan (only valid while STA is disconnected)
 - Soft-AP control with caller-provided SSID / password
 - mDNS lifecycle (auto-start on got-IP, auto-stop on disconnect / Off)
@@ -113,6 +116,26 @@ std::strncpy(cfg.password, "secret", sizeof(cfg.password) - 1);
 wifi.connect(cfg);
 ```
 
+### Saved-Credentials And Transient Connects
+
+`WifiStaConfig::ssid` empty means "use NVS-saved credentials":
+`WifiManager::connect()` first calls `_hal.has_saved_credentials()`. If
+the HAL reports none it returns `WifiStatus::NotFound` immediately
+without touching driver state. Otherwise it forwards to the HAL with
+the empty SSID and the HAL calls `esp_wifi_connect()` directly,
+letting ESP-IDF auto-connect from NVS. Retry / backoff fields still
+apply because they are manager-owned policy. `WifiManager::has_saved_credentials()`
+exposes the HAL query so callers can branch between saved-creds and
+fallback paths without attempting a connect.
+
+`WifiStaConfig::persist = false` is the factory-default fallback path.
+`EspWifiHal::connect_sta()` toggles `WIFI_STORAGE_RAM` immediately
+before `esp_wifi_set_config` and restores `WIFI_STORAGE_FLASH`
+immediately after, so the set_config call writes RAM only and never
+touches NVS. The default `persist = true` keeps every existing caller
+source- and behaviour-compatible. The toggle is global driver state;
+keep it bounded to a single set_config call inside `connect_sta()`.
+
 ## Configuration
 
 The component exposes one Kconfig knob under **AirGradient Wi-Fi** in
@@ -137,6 +160,9 @@ the top-level [tests runner](../../tests/README.md). They cover:
 
 - mode state-machine transitions and idempotency
 - connect / disconnect / retry backoff
+- saved-credentials path (empty-SSID convention, `NotFound` when the
+  HAL has no creds, retry / backoff still applied)
+- transient (`persist=false`) connect leaves NVS unchanged
 - disconnect-reason mapping (raw ESP-IDF code → `WifiDisconnectReason`)
 - mDNS auto-start on got-IP, auto-stop on disconnect / Off
 - DHCP timeout policy (treated as `dhcp_failed`, non-retriable)
@@ -160,3 +186,43 @@ exposes two single-shot timers — `arm_dhcp_timeout` /
 `cancel_retry_timer` for the connect-retry backoff — so the manager
 can keep all timing decisions in pure C++. The driver backs both with
 `esp_timer`.
+
+### Active-scan dwell
+
+`EspWifiHal::start_scan` requests a 60 ms per-channel active dwell
+(`scan_time.active.max = 60`). The intent is to keep a full 42-channel
+AUTO-band scan inside the ~10 s PMF SA-Query tolerance of any client
+associated to a co-resident SoftAP, so the captive-portal provisioning
+flow does not lose its legitimate client to a SA-Query disassoc while
+the scan is in flight.
+
+When BLE is enabled on the same chip, ESP-IDF silently overrides the
+requested dwell back to BT-coex-safe defaults (~240 ms/channel) and
+logs `"Should use default active scan time parameter for WiFi scan
+when Bluetooth is enabled"` at warning level. The 60 ms request is
+still honoured for `WifiOnly` provisioning flows and for any path
+where BLE has already been deinit'd before the scan starts (e.g. the
+`airgradient-provisioning` "first AP client commits" teardown). No
+public-API change; `WifiScanConfig` is unchanged.
+
+### PMF on SoftAP is not configurable
+
+`EspWifiHal::start_ap` does not attempt to disable PMF on the
+soft-AP. ESP-IDF documents `pmf_cfg.capable` as deprecated and always
+forces PMF when the peer advertises support; setting `capable=false`
+is silently dropped. Mitigation for the resulting SA-Query disassoc
+under BT-coex lives entirely in `airgradient-provisioning` (transport
+selector, first-client-wins teardown, shortened scan dwell above).
+
+### Band mode is not pinned
+
+ESP-IDF persists `band_mode` to NVS via `WIFI_STORAGE_FLASH`. A
+one-time `esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY)` call
+survives reboots, which can silently mask regressions during
+diagnosis. Products that want a specific band policy must call
+`esp_wifi_set_band_mode()` explicitly on every boot; otherwise a
+fresh-NVS unit falls back to AUTO. This driver intentionally does
+not pin the band — leaving the radio on AUTO preserves 5 GHz scan
+visibility, and product-side mitigation (e.g. transport-aware
+teardown in `airgradient-provisioning`) handles the SoftAP / scan
+interaction without needing to disable a whole band.

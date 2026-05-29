@@ -211,8 +211,10 @@ WifiStatus WifiManager::connect(const WifiStaConfig &config) {
   if (mode != WifiMode::Sta && mode != WifiMode::ApSta) {
     return WifiStatus::InvalidState;
   }
-  if (config.ssid[0] == '\0') {
-    return WifiStatus::InvalidArgument;
+  // Empty SSID = use NVS-saved credentials. Refuse without touching the
+  // driver if none are persisted, so the caller can route to a fallback.
+  if (config.ssid[0] == '\0' && !_hal.has_saved_credentials()) {
+    return WifiStatus::NotFound;
   }
   if (_sta_state == WifiStaState::Connecting) {
     return WifiStatus::AlreadyInProgress;
@@ -225,6 +227,8 @@ WifiStatus WifiManager::connect(const WifiStaConfig &config) {
   _start_connect_attempt();
   return WifiStatus::Ok;
 }
+
+bool WifiManager::has_saved_credentials() const { return _hal.has_saved_credentials(); }
 
 WifiStatus WifiManager::disconnect() {
   _disconnect_requested = true;
@@ -434,7 +438,8 @@ void WifiManager::_on_hal_retry_due() {
 
 void WifiManager::_start_connect_attempt() {
   _sta_state = WifiStaState::Connecting;
-  const WifiStatus status = _hal.connect_sta(_sta_config.ssid, _sta_config.password);
+  const WifiStatus status =
+      _hal.connect_sta(_sta_config.ssid, _sta_config.password, _sta_config.persist);
   if (status != WifiStatus::Ok) {
     // The HAL refused outright (bad args, mode race, ...). Fail fast —
     // this isn't a transient condition the backoff curve fixes.

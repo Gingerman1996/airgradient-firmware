@@ -8,10 +8,16 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include "ag_log.h"
 #include "airgradient_gpio.h"
 
 #include <cstdint>
 #include <string>
+
+#ifndef TEST_HOST
+#include <esp_heap_caps.h>
+#include <esp_system.h>
+#endif
 
 // Configures pin as output and drives it LOW.
 // Returns false if GPIO configuration fails.
@@ -34,5 +40,23 @@ uint32_t generate_random_number(uint8_t length);
 
 // Reboots the MCU. No-op when running under TEST_HOST.
 void reboot();
+
+// Formats a network-byte-order IPv4 address into a dotted-decimal string
+// (e.g. 0x0104a8c0 -> "192.168.4.1"). The output buffer must be at least
+// 16 bytes (covers "255.255.255.255" + NUL). The caller is responsible
+// for ensuring the buffer is large enough.
+void format_ipv4_be(uint32_t ip_be, char out[16]);
+
+inline void log_heap(const char *tag, const char *label) {
+#ifndef TEST_HOST
+  AG_LOGI(tag, "[HEAP] %s free=%u min=%u largest=%u", label,
+          static_cast<unsigned>(esp_get_free_heap_size()),
+          static_cast<unsigned>(esp_get_minimum_free_heap_size()),
+          static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT)));
+#else
+  (void)tag;
+  (void)label;
+#endif
+}
 
 #endif // COMMON_H

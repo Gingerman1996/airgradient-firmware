@@ -8,6 +8,7 @@
 #if defined(__has_include)
 #if __has_include(<catch2/catch_test_macros.hpp>)
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -162,12 +163,26 @@ namespace {
 // convenience without bringing in esp_http_server.
 class StubHttpServer : public HttpServer {
 public:
-  bool start(uint16_t) override { return true; }
-  void stop() override {}
+  bool start(uint16_t) override {
+    started = true;
+    return true;
+  }
+  void stop() override { started = false; }
   bool register_route(HttpMethod method, const char *path, HttpHandler handler) override {
     routes.push_back({method, path, std::move(handler)});
     return true;
   }
+  bool unregister_route(HttpMethod method, const char *path) override {
+    auto it = std::find_if(routes.begin(), routes.end(), [method, path](const auto &r) {
+      return r.method == method && r.path == path;
+    });
+    if (it == routes.end()) {
+      return false;
+    }
+    routes.erase(it);
+    return true;
+  }
+  void unregister_all() override { routes.clear(); }
 
   struct Recorded {
     HttpMethod method;
@@ -175,6 +190,7 @@ public:
     HttpHandler handler;
   };
   std::vector<Recorded> routes;
+  bool started = false;
 };
 
 } // namespace
@@ -205,6 +221,92 @@ TEST_CASE("register_static rejects invalid ranges", "[http][server]") {
   REQUIRE_FALSE(server.register_static("/", nullptr, kBuf + 1, "text/html"));
   REQUIRE_FALSE(server.register_static("/", kBuf + 1, kBuf, "text/html"));
   REQUIRE(server.routes.empty());
+}
+
+TEST_CASE("unregister_route removes a previously registered route", "[http][server]") {
+  StubHttpServer server;
+  server.register_route(HttpMethod::Get, "/api/status", status_handler);
+  server.register_route(HttpMethod::Post, "/api/echo", echo_body_handler);
+  REQUIRE(server.routes.size() == 2);
+
+  REQUIRE(server.unregister_route(HttpMethod::Get, "/api/status"));
+  REQUIRE(server.routes.size() == 1);
+  REQUIRE(server.routes[0].path == "/api/echo");
+}
+
+TEST_CASE("unregister_route returns false for non-existent route", "[http][server]") {
+  StubHttpServer server;
+  server.register_route(HttpMethod::Get, "/api/status", status_handler);
+
+  REQUIRE_FALSE(server.unregister_route(HttpMethod::Post, "/api/status"));
+  REQUIRE_FALSE(server.unregister_route(HttpMethod::Get, "/api/missing"));
+  REQUIRE(server.routes.size() == 1);
+}
+
+TEST_CASE("unregister_all clears all routes", "[http][server]") {
+  StubHttpServer server;
+  server.register_route(HttpMethod::Get, "/a", status_handler);
+  server.register_route(HttpMethod::Post, "/b", echo_body_handler);
+  server.register_route(HttpMethod::Get, "/c", query_handler);
+  REQUIRE(server.routes.size() == 3);
+
+  server.unregister_all();
+  REQUIRE(server.routes.empty());
+}
+
+TEST_CASE("register_route works after start", "[http][server]") {
+  StubHttpServer server;
+  server.register_route(HttpMethod::Get, "/before", status_handler);
+  REQUIRE(server.start(80));
+
+  REQUIRE(server.register_route(HttpMethod::Post, "/after", echo_body_handler));
+  REQUIRE(server.routes.size() == 2);
+  REQUIRE(server.routes[1].path == "/after");
+}
+
+TEST_CASE("unregister_route works after start", "[http][server]") {
+  StubHttpServer server;
+  server.register_route(HttpMethod::Get, "/api/status", status_handler);
+  server.register_route(HttpMethod::Post, "/api/echo", echo_body_handler);
+  REQUIRE(server.start(80));
+
+  REQUIRE(server.unregister_route(HttpMethod::Get, "/api/status"));
+  REQUIRE(server.routes.size() == 1);
+  REQUIRE(server.routes[0].path == "/api/echo");
+}
+
+TEST_CASE("unregister_all then re-register produces correct route set", "[http][server]") {
+  StubHttpServer server;
+  server.register_route(HttpMethod::Get, "/old", status_handler);
+  server.register_route(HttpMethod::Post, "/old2", echo_body_handler);
+  REQUIRE(server.start(80));
+
+  server.unregister_all();
+  REQUIRE(server.routes.empty());
+
+  REQUIRE(server.register_route(HttpMethod::Get, "/new", query_handler));
+  REQUIRE(server.routes.size() == 1);
+  REQUIRE(server.routes[0].path == "/new");
+}
+
+TEST_CASE("stop then unregister_all then re-register and start", "[http][server]") {
+  StubHttpServer server;
+  server.register_route(HttpMethod::Get, "/phase1", status_handler);
+  REQUIRE(server.start(80));
+  REQUIRE(server.started);
+
+  server.stop();
+  REQUIRE_FALSE(server.started);
+
+  server.unregister_all();
+  REQUIRE(server.routes.empty());
+
+  server.register_route(HttpMethod::Get, "/phase2", query_handler);
+  server.register_route(HttpMethod::Post, "/phase2/action", echo_body_handler);
+  REQUIRE(server.start(80));
+  REQUIRE(server.routes.size() == 2);
+  REQUIRE(server.routes[0].path == "/phase2");
+  REQUIRE(server.routes[1].path == "/phase2/action");
 }
 
 #endif // has Catch2

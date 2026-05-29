@@ -80,6 +80,7 @@ public:
   AgBleGattService *add_service(const char *uuid) override;
   bool set_advertising_name(const char *name) override;
   bool add_advertised_service_uuid(const char *uuid) override;
+  bool set_manufacturer_data(const uint8_t *data, size_t len) override;
   bool start_advertising() override;
   bool stop_advertising() override;
   void set_connect_callback(AgBleConnectCallback callback) override;

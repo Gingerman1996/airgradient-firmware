@@ -44,7 +44,7 @@ constexpr float ALTITUDE = -10000.0f;
 } // namespace MeasuresInvalid
 
 struct CO2Data {
-  int co2;
+  int co2 = MeasuresInvalid::CO2;
 
   bool is_valid() const {
     return co2 >= MeasuresRange::MIN_VALID_CO2 && co2 <= MeasuresRange::MAX_VALID_CO2;
@@ -52,8 +52,8 @@ struct CO2Data {
 };
 
 struct TempHumData {
-  float temperature;
-  float humidity;
+  float temperature = MeasuresInvalid::TEMPERATURE;
+  float humidity = MeasuresInvalid::HUMIDITY;
 
   bool is_temp_valid() const {
     return temperature >= MeasuresRange::MIN_VALID_TEMP &&
@@ -69,22 +69,22 @@ struct TempHumData {
 
 struct PMData {
   // Atmospheric environment
-  float pm_01;
-  float pm_25;
-  float pm_10;
+  float pm_01 = MeasuresInvalid::PM;
+  float pm_25 = MeasuresInvalid::PM;
+  float pm_10 = MeasuresInvalid::PM;
 
   // Standard particle
-  float pm_01_sp;
-  float pm_25_sp;
-  float pm_10_sp;
+  float pm_01_sp = MeasuresInvalid::PM;
+  float pm_25_sp = MeasuresInvalid::PM;
+  float pm_10_sp = MeasuresInvalid::PM;
 
   // Particle counts
-  float pm_03_pc;
-  float pm_05_pc;
-  float pm_01_pc;
-  float pm_25_pc;
-  float pm_5_pc;
-  float pm_10_pc;
+  float pm_03_pc = MeasuresInvalid::PM;
+  float pm_05_pc = MeasuresInvalid::PM;
+  float pm_01_pc = MeasuresInvalid::PM;
+  float pm_25_pc = MeasuresInvalid::PM;
+  float pm_5_pc = MeasuresInvalid::PM;
+  float pm_10_pc = MeasuresInvalid::PM;
 
   // Individual validation methods
   bool is_pm_01_valid() const { return pm_01 >= MeasuresRange::MIN_VALID_PM; }
@@ -112,10 +112,10 @@ struct PMData {
 };
 
 struct TVOCNOxData {
-  int tvoc_index;
-  int tvoc_raw;
-  int nox_index;
-  int nox_raw;
+  int tvoc_index = MeasuresInvalid::TVOC;
+  int tvoc_raw = MeasuresInvalid::TVOC;
+  int nox_index = MeasuresInvalid::NOX;
+  int nox_raw = MeasuresInvalid::NOX;
 
   bool is_tvoc_index_valid() const { return tvoc_index >= MeasuresRange::MIN_VALID_TVOC; }
   bool is_tvoc_raw_valid() const { return tvoc_raw >= MeasuresRange::MIN_VALID_TVOC; }
@@ -129,11 +129,11 @@ struct TVOCNOxData {
 };
 
 struct O3No2Data {
-  float o3_we;
-  float o3_ae;
-  float no2_we;
-  float no2_ae;
-  float afe_temp;
+  float o3_we = MeasuresInvalid::VOLT;
+  float o3_ae = MeasuresInvalid::VOLT;
+  float no2_we = MeasuresInvalid::VOLT;
+  float no2_ae = MeasuresInvalid::VOLT;
+  float afe_temp = MeasuresInvalid::VOLT;
 
   bool is_o3_working_valid() const { return o3_we >= MeasuresRange::MIN_VALID_VOLT; }
   bool is_o3_auxiliary_valid() const { return o3_ae >= MeasuresRange::MIN_VALID_VOLT; }
@@ -161,8 +161,8 @@ struct MeasuresPower {
 };
 
 struct PressureData {
-  float pressure; // hPa
-  float altitude; // meters
+  float pressure = MeasuresInvalid::PRESSURE; // hPa
+  float altitude = MeasuresInvalid::ALTITUDE; // meters
 
   bool is_pressure_valid() const {
     return pressure >= MeasuresRange::MIN_VALID_PRESSURE &&

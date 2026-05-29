@@ -19,6 +19,7 @@ functions for load/save.
 | `ConfigStore` | `airgradient-config` (`hal/config_store.h`) | Typed key-value persistence interface |
 | `NvsConfigStore` | `airgradient-config` (`backends/nvs_config_store.h`) | ESP-IDF NVS-backed implementation injected at construction |
 | `OperatingMode`, `GpsMode` | product (`go_types.h`) | Enums serialized as int and reconstructed on load |
+| `WifiStaticIpConfig` | `airgradient-wifi` (`types/wifi_types.h`) | Five-uint32 static-IP record persisted alongside the other settings |
 
 ## Public API
 
@@ -42,6 +43,16 @@ See [`go_settings.h`](../main/go_settings.h) for full signatures.
 | `inactivity_timeout_seconds` | `"ito"` | `int` | `30` | 5 .. 600 | Persisted and exposed over BLE; not currently used by the runtime auto-lock path |
 | `auto_lock_seconds` | `"als"` | `int` | `0` | 0, 10, 30, 60 | Runtime auto-lock timeout; `0` = disabled |
 | `device_name` | `"dn"` | `std::string` | `"airgradient-go"` | 1 .. 64 chars | Advertised name for BLE/WiFi |
+| `disable_cloud` | `"dc"` | `bool` | `false` | — | Stationary connectivity preference latched from the provisioning payload. Honoured by `CloudService` — when true, both POST and FETCH are suppressed. |
+| `static_ip.ip` | `"sip"` | `uint32_t` (stored as `int`) | `0` (DHCP) | — | Static-IP address (network byte order). Zero means DHCP and skips the other static-IP fields on load. |
+| `static_ip.netmask` | `"snm"` | `uint32_t` (stored as `int`) | `0` | — | Loaded only when `static_ip.ip != 0`. |
+| `static_ip.gateway` | `"sgw"` | `uint32_t` (stored as `int`) | `0` | — | Loaded only when `static_ip.ip != 0`. |
+| `static_ip.dns_primary` | `"sd1"` | `uint32_t` (stored as `int`) | `0` | — | Loaded only when `static_ip.ip != 0`. |
+| `static_ip.dns_secondary` | `"sd2"` | `uint32_t` (stored as `int`) | `0` | — | Loaded only when `static_ip.ip != 0`. |
+
+Wi-Fi SSID and password are owned by ESP-IDF Wi-Fi NVS via
+`esp_wifi_set_config()`. Only metadata that ESP-IDF Wi-Fi does not own
+(`disable_cloud`, `static_ip`) lives in `GoSettings`.
 
 ## Load Behavior
 
@@ -83,6 +94,23 @@ All validation is implemented in an anonymous namespace in `go_settings.cpp`
 | `operating_mode` | Underlying int in `0 .. 2` (matches `OperatingMode` enum values) |
 | `auto_lock_seconds` | `0`, `10`, `30`, or `60` |
 | `device_name` | Non-empty and `<= 64` characters |
+| `disable_cloud` | No range check (bool) |
+| `static_ip.*` | No range check; the loader treats `static_ip.ip == 0` as DHCP and short-circuits the other four fields |
+
+## Stationary Networking Fields
+
+`disable_cloud` and `static_ip` are written by the orchestrator on
+every successful provisioning session
+(`Orchestrator::on_provisioning_state_changed()` on the `Connected`
+event). The provisioning payload carries both values inline, and the
+orchestrator persists them via `save_go_settings()` before tearing the
+provisioning transport down. `static_ip` is zeroed when the user
+selected DHCP, so re-provisioning back to DHCP cleanly clears any
+previously-stored static-IP fields.
+
+Factory reset writes a default-constructed `GoSettings` to NVS (zeroing
+both fields) and additionally calls `WifiService::clear_credentials()`
+to erase the ESP-IDF Wi-Fi NVS entries.
 
 ## Relationship to RtcAppState
 

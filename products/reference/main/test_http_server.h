@@ -1,9 +1,10 @@
 #ifndef TEST_HTTP_SERVER_H
 #define TEST_HTTP_SERVER_H
 
-// Brings up a SoftAP, starts an IdfHttpServer on port 80, and registers a
-// handful of demo routes. Blocks forever so the server stays available
-// for manual probing from a phone or laptop.
+// Brings up a SoftAP, starts an IdfHttpServer on port 80, and registers
+// demo routes both before and after start() to exercise dynamic route
+// registration. Blocks forever so the server stays available for manual
+// probing from a phone or laptop.
 //
 // Connect from a client:
 //   1. Join Wi-Fi network "airgradient-ref" (password: "airgradient")

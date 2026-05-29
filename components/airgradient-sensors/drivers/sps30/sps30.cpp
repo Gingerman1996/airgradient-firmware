@@ -133,11 +133,11 @@ bool SPS30::read(PMData &out) {
   float pm05_num = _extract_float(&buffer[24]);
   float pm1_num = _extract_float(&buffer[30]);
   float pm25_num = _extract_float(&buffer[36]);
-  float pm4_num = _extract_float(&buffer[42]);
+  // float pm4_num = _extract_float(&buffer[42]); // PM4.0 - no PMData field
   float pm10_num = _extract_float(&buffer[48]);
   // float typical_size = _extract_float(&buffer[54]); // not needed
 
-  // Map to PMData atmospheric fields
+  // Map to PMData atmospheric fields (ug/m^3)
   out.pm_01 = pm1_mass;
   out.pm_25 = pm25_mass;
   out.pm_10 = pm10_mass;
@@ -145,18 +145,20 @@ bool SPS30::read(PMData &out) {
   // Standard particle fields left as invalid (SPS30 doesn't distinguish CF=1
   // vs atmospheric)
 
-  // Map particle counts:
-  // SPS30 PM0.5 number -> pm_03_pc (closest to 0.3um particle count)
-  // SPS30 PM1.0 number -> pm_05_pc (closest to 0.5um particle count)
-  // SPS30 PM2.5 number -> pm_01_pc (closest to 1.0um particle count)
-  // SPS30 PM4.0 number -> pm_25_pc (closest to 2.5um particle count)
-  // SPS30 PM10 number  -> pm_10_pc (closest to 10um particle count)
-  // pm_5_pc left as invalid (SPS30 has no 5.0um count)
-  out.pm_03_pc = pm05_num;
-  out.pm_05_pc = pm1_num;
-  out.pm_01_pc = pm25_num;
-  out.pm_25_pc = pm4_num;
-  out.pm_10_pc = pm10_num;
+  // Map particle counts to same-named PMData bins.
+  // SPS30 reports number concentrations in #/cm^3; PMData (PMS5003
+  // convention) uses #/0.1L, so multiply by 100.
+  //   SPS30 PM0.5 number -> pm_05_pc
+  //   SPS30 PM1.0 number -> pm_01_pc
+  //   SPS30 PM2.5 number -> pm_25_pc
+  //   SPS30 PM10  number -> pm_10_pc
+  // SPS30 has no PM0.3, PM5.0, and PM4.0 doesn't map to any PMData bin, so
+  // pm_03_pc, pm_5_pc remain at MeasuresInvalid::PM.
+  static constexpr float CM3_TO_PER_DECILITRE = 100.0f;
+  out.pm_05_pc = pm05_num * CM3_TO_PER_DECILITRE;
+  out.pm_01_pc = pm1_num * CM3_TO_PER_DECILITRE;
+  out.pm_25_pc = pm25_num * CM3_TO_PER_DECILITRE;
+  out.pm_10_pc = pm10_num * CM3_TO_PER_DECILITRE;
 
   ESP_LOGD(TAG, "PM1.0=%.2f PM2.5=%.2f PM10=%.2f", out.pm_01, out.pm_25, out.pm_10);
 

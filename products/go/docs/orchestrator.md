@@ -23,11 +23,15 @@ sleep cycle.
 | `StorageService` | product (`go_storage.h`) | Cache measurements, persist route data |
 | `PowerService` | product (`go_power.h`) | BMS polling, sleep entry, RTC state, shutdown |
 | `UIManager` | product (`go_ui.h`) | Screen navigation, input dispatch, display value building |
+| `BleService` | product (`go_ble.h`) | Portable BLE peripheral; initialised on Portable entry, torn down on leave |
+| `WifiService` | product (`go_wifi.h`) | Stationary Wi-Fi lifecycle: saved-credentials connect, factory fallback, provisioning, disconnect routing |
+| `GoBoard` | product (`go_board.h`) | Borrowed for `init_wifi_subsystem()` on first Stationary entry |
 | `ConfigStore` | `airgradient-config` | Load/save `GoSettings` to NVS |
 | `GoSettings` | product (`go_settings.h`) | Product configuration |
 | `Event`, `EventType` | product (`go_events.h`) | Event queue types |
 | `RtcAppState` | product (`go_types.h`) | State persisted across deep sleep |
 | RTOS | `airgradient-common` | Queue receive, time query, delay |
+| `format_ipv4_be` | `airgradient-common` (`common.h`) | Format the network-byte-order IPv4 for the bring-up "Connected!" page text |
 
 ## Public API
 
@@ -44,10 +48,12 @@ struct and supporting types.
 
 The orchestrator is constructed by `GoApp` after all services are
 initialized. It takes ownership of a copy of `GoSettings` and holds
-references to all services via the `Services` aggregate:
+references to all services via the `Services` aggregate (sensor producer,
+GPS, input, display, storage, power, UI manager, BLE service, Wi-Fi
+service, board):
 
 ```cpp
-Orchestrator::Services services{ /* eight service refs */ };
+Orchestrator::Services services{ /* service refs + board ref */ };
 Orchestrator orchestrator(event_queue, services, settings, config_store, serial);
 
 // Fresh boot (default BootHandoff):
@@ -113,6 +119,15 @@ The display hasn't been painted yet or shows stale content. `init()` calls
 
 No lock state change. Device stays locked.
 
+**Cold-boot splash:**
+
+When `GoApp` already painted `Screen::Info` with `Booting...` and the boot
+handoff does not contain a completed measurement, `init()` arms
+`_boot_splash_active`. The splash remains visible until the first
+`SensorDataReady` event. If Stationary setup takes ownership of
+`Screen::Info` before that event, the flag is cleared without resetting the
+session page.
+
 ### Cached Measures Seeding
 
 `init()` seeds `_cached_measures` from the handoff in priority order:
@@ -134,6 +149,16 @@ If `_tracking_active` is true after RTC state restoration, the orchestrator
 calls `storage.start_route(_tracking_session_id)` to reopen the route file
 in append mode.
 
+### Mode Entry (Portable / Stationary)
+
+After the common tail (sensor / BMS poll baselines), `init()` invokes
+`init_ble_if_portable()` and — when `_settings.operating_mode ==
+Stationary` — calls `enter_stationary()`. The two-phase
+`change_mode()` ordering does not apply to cold boot because there is
+no outgoing mode to tear down. Cold-boot Portable never calls
+`_board.init_wifi_subsystem()`, so the Wi-Fi ESP-IDF stack stays
+uninitialised for the lifetime of that boot.
+
 ## Application State
 
 The orchestrator owns the authoritative application state:
@@ -146,6 +171,10 @@ The orchestrator owns the authoritative application state:
 | `_gps_enabled` | `bool` | `true` | Whether GPS data is used (derived from `GpsMode` setting) |
 | `_tracking_active` | `bool` | `false` | True while a route is being logged |
 | `_tracking_session_id` | `uint32_t` | `0` | 5-digit session ID; 0 = no active session |
+| `_provisioning_sensitive_services_paused` | `bool` | `false` | True while sensor producer / GPS / PM rail are paused for the active provisioning transport; gates sensor / BMS / PM / snackbar-refresh deadlines |
+| `_setup_session_active` | `bool` | `false` | True between Stationary session entry (`Screen::Info` or `Screen::Provisioning` after post-online `auth_failed`) and the leave-to-Home / leave-to-Portable boundary; gates power-button short-press, auto-lock, touch-driven drop-free render, and background-render suppression |
+| `_bring_up_pending` | `bool` | `false` | True while `Screen::Info` is showing the STA-attempt narration; lets `on_wifi_connected()` distinguish the on-Info success path from the post-online reconnect path |
+| `_boot_splash_active` | `bool` | `false` | True while cold boot is showing `Booting...` on `Screen::Info`; cleared by first sensor data and suppresses ButtonPower short-press lock toggles |
 
 On fresh boot (`PowerOn`), defaults are used. On wake from deep sleep (`Timer`
 or `Button`), state is restored from RTC memory via
@@ -171,16 +200,24 @@ the nearest deadline.
 
 | Timer | Interval | Active When |
 |---|---|---|
-| PM pre-wake | `measure_interval - CONFIG_SENSOR_WARMUP_DURATION_MS` | Not Offline, interval ≥ `pm_sleep_threshold_ms`, prepare not yet sent |
-| Sensor (all groups) | `measure_interval_seconds * 1000` | Always |
-| BMS poll + watchdog | `BMS_POLL_INTERVAL_MS` (5000 ms) | Always |
-| External watchdog | `EXT_WDT_INTERVAL_MS` (60000 ms) | Always |
-| Inactivity | `auto_lock_seconds * 1000` | Unlocked and auto-lock > 0 |
-| Snackbar refresh | `SNACKBAR_DURATION_MS + 200` (one-shot) | While snackbar is active |
+| PM pre-wake | `measure_interval - CONFIG_SENSOR_WARMUP_DURATION_MS` | Not Offline, interval ≥ `pm_sleep_threshold_ms`, prepare not yet sent, sensitive services not paused |
+| Sensor (all groups) | `measure_interval_seconds * 1000` | Sensitive services not paused |
+| BMS full poll | `BMS_POLL_INTERVAL_MS` (30000 ms) | Sensitive services not paused |
+| BMS status poll | `BMS_STATUS_POLL_INTERVAL_MS` (5000 ms) | Sensitive services not paused |
+| External watchdog | `EXT_WDT_INTERVAL_MS` (60000 ms) | Always — never suppressed during a setup session |
+| Inactivity | `auto_lock_seconds * 1000` | Unlocked, auto-lock > 0, and no setup session active |
+| Snackbar refresh | `SNACKBAR_DURATION_MS + 200` (one-shot) | Snackbar active, sensitive services not paused |
+| Wi-Fi initial-connect / fallback | `WifiService::next_deadline_ms()` | While the service has armed a deadline (Stationary bring-up) |
 
 `compute_queue_timeout_ms()` returns the minimum remaining time across all
 active timers, clamped to 0 when any deadline has already passed (unsigned
-subtraction wraps to a large value).
+subtraction wraps to a large value). `check_timers()` finally calls
+`_svc.wifi.tick(now)` to clear an expired-by-IP deadline latch or
+synthesize a `WifiDisconnected{connection_lost}` when the bring-up
+window expires without an IP. The external watchdog is intentionally
+**not** suppressed during the session — without it, every other timer
+being gated could leave `next == UINT32_MAX` and busy-spin the event
+loop.
 
 ## Event Dispatch
 
@@ -188,7 +225,7 @@ Events are dispatched by type:
 
 | EventType | Handler |
 |---|---|
-| `SensorDataReady` | `on_sensor_data()` — cache, store route point if tracking, update BLE measures, update display |
+| `SensorDataReady` | `on_sensor_data()` — cache, clear cold-boot splash if active, log full `MeasuresAGo` snapshot, store route point if tracking, update BLE measures, update display |
 | `GpsFixUpdate` | `on_gps_fix()` — cache GPS if `is_gps_active()` |
 | `InputPress` | `on_input()` — shutdown, lock/unlock, forward to UIManager |
 | `UserStartTracking` | `start_tracking()` |
@@ -208,6 +245,11 @@ Events are dispatched by type:
 | `BlePairingRequest` | Show passkey overlay |
 | `BleAuthComplete` | Dismiss passkey overlay |
 | `Co2CalibrationDone` | Show result snackbar, notify BLE command result, update display |
+| `WifiConnected` | `on_wifi_connected()` — bring-up success (`Connected!\n<ip>` on Info then leave to Home), or post-online reconnect snackbar on Home; unconditionally `cloud.start()` + `cloud.arm()` |
+| `WifiDisconnected` | `on_wifi_disconnected()` — `cloud.disarm()` then disconnect-policy router (auth_failed always opens provisioning; other credential-class reasons only before first online) |
+| `ProvisioningStateChanged` | `on_provisioning_state_changed()` — update Provisioning page state, persist `disable_cloud` / `static_ip` on `Connected`, `cloud.start()` + `cloud.arm(true)` after provisioning teardown, fall back to Portable on `Stopped` without prior online |
+| `PostMeasuresResult` | Log-only (result code) |
+| `FetchConfigResult` | Log-only (result code) |
 
 ## Input Handling
 
@@ -215,10 +257,28 @@ Events are dispatched by type:
 
 1. **Long press ButtonPower** — `shutdown()` (any lock state)
 2. **Long press ButtonBoot** — `factory_reset()`, then reboot on success
-3. **Short press ButtonPower** — toggle lock/unlock
-4. **Locked** — ignore all remaining inputs
-5. **Unlocked** — forward to `UIManager::handle_input()`, then handle the
-    returned `UIActionResult` (start/stop tracking, change mode, etc.)
+3. **Short press ButtonPower while `_setup_session_active` or
+   `_boot_splash_active`** — suppressed (no lock toggle); the setup
+   instructions or cold-boot splash stay visible
+4. **Short press ButtonPower** — toggle lock/unlock
+5. **Locked** — touch shows "Unlock First" snackbar; other inputs ignored
+6. **Unlocked** — forward to `UIManager::handle_input()`, then handle the
+    returned `UIActionResult` (start/stop tracking, change mode,
+    provisioning confirm-switch / confirm-cancel, etc.)
+
+The catch-all render at the tail of `on_input()` uses
+`update_display(/*wait=*/true)` when `_setup_session_active` is set so
+touch-driven session transitions (row toggle, confirm open, No/Yes
+toggle, No-back) cannot be dropped when the worker is mid-paint on a
+prior frame. Non-session screens keep the existing non-blocking
+default.
+
+The `UIAction::ConfirmSwitchProvisioningTransport` case is handled
+inside the dispatch switch and returns early, bypassing the catch-all
+render. The case body latches `ProvisioningUiState::SwitchingTransport`,
+runs `update_display(wait=true) + DisplayService::flush()` so the
+"Switching to ..." ack is painted before the transport flips, then
+calls `_svc.wifi.switch_provisioning_transport()`.
 
 ## State Transitions
 
@@ -240,8 +300,20 @@ toggles `_behavior` between `Tracking` and `Idle`.
 
 ### change_mode()
 
-Updates `_mode`, manages the BLE lifecycle for Portable mode, and shows a
-snackbar. WiFi/HTTP server logic is still deferred.
+Updates `_mode`, persists it to NVS, and syncs `UIManager` so the
+Settings menu reflects the new mode. Tears down the outgoing radio
+(BLE for Portable, Wi-Fi via `WifiService::shutdown()` for Stationary)
+and brings up the incoming radio (`init_ble_if_portable()` on entry to
+Portable, `enter_stationary()` on entry to Stationary). The PM sensor
+power rail is re-enabled (idempotent) before any mode-specific entry so
+a previous Portable session that power-cycled PM off does not leave the
+rail dark across the transition.
+
+The Stationary entry branch returns before the generic
+`"Mode changed"` snackbar fires — `enter_stationary()` opens
+`Screen::Info` with the attempt-specific text and runs its own
+`update_display(wait=true)`. Mode changes to Portable / Offline keep
+the snackbar + display update.
 
 ### apply_settings_change()
 
@@ -259,15 +331,143 @@ client is connected, shows a snackbar, and returns success/failure.
 
 ### factory_reset()
 
-Calls `clear_data()`, restores default `GoSettings`, deletes all stored BLE
-bonds, resets runtime state back to Portable + Idle + Locked, updates the
-display, and returns success/failure. The caller reboots the ESP on success.
+Calls `clear_data()`, writes default `GoSettings` to NVS (which zeros
+`disable_cloud` and `static_ip`), calls `WifiService::clear_credentials()`
+to erase the ESP-IDF Wi-Fi NVS entries and reset online latches,
+deletes all stored BLE bonds, resets runtime state back to Portable +
+Idle + Locked, updates the display, and returns success/failure. The
+caller reboots the ESP on success.
 
 ### shutdown()
 
 Stops tracking if active, backs up the cache, shows the shutdown screen,
 waits for the display refresh (500 ms), then calls
 `PowerService::shutdown()` (BMS ship mode — does not return).
+
+## Stationary Networking
+
+Stationary mode brings up Wi-Fi via `WifiService` and runs the on-device
+setup session (`Screen::Info` → `Screen::Provisioning` →
+`Screen::ProvisioningConfirm`). The orchestrator owns the mode policy,
+the session UI lifecycle, the disconnect-policy router, and the
+service-pause / clock-rebase machinery; `WifiService` owns the radio
+mechanics. See [`wifi_service.md`](wifi_service.md) for the service-side
+contract.
+
+### Setup Session Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> EnterStationary
+    EnterStationary --> Info: show "Connecting to saved Wi-Fi..." or "Trying default Wi-Fi..."
+    Info --> Home: STA success -- Connected! + 500 ms hold + leave to Home unlocked
+    Info --> Provisioning: STA failure (auth or window expiry) -- pause sensitive services
+    Provisioning --> ProvisioningConfirm: TouchEnter on row 0 or 1
+    ProvisioningConfirm --> Provisioning: No
+    ProvisioningConfirm --> Provisioning: Yes on row 0 -- switch transport
+    ProvisioningConfirm --> Portable: Yes on row 1 -- leave session to Portable
+    Provisioning --> Home: Connected event -- persist + 1.5 s on-page hold + leave to Home
+    Provisioning --> Portable: Stopped before online -- leave session to Portable
+```
+
+`enter_stationary()` is invoked by `change_mode(Stationary)` and by
+`init()` when the persisted mode is Stationary. It calls
+`_board.init_wifi_subsystem()` (idempotent), runs the silent session
+preamble, sets `_bring_up_pending`, opens `Screen::Info` with the
+attempt-specific narration text, and starts the STA attempt with
+`update_display(wait=true)`. STA success goes through
+`on_wifi_connected()`; STA failure routes through the disconnect policy.
+
+### Session State Helpers
+
+| Helper | Role |
+|---|---|
+| `begin_session_if_needed()` | Idempotent session preamble. Sets `_setup_session_active`, silently flips `_lock_state = Unlocked` (no `"Unlocked"` snackbar), and clears any pending snackbar so leftover `"Mode changed"` / `"Locked"` / stale `"Wi-Fi connected"` cannot leak onto session screens. Called by `enter_stationary()` and `enter_provisioning_page()`. |
+| `enter_provisioning_page(transport)` | Entry into `Screen::Provisioning`. Calls `begin_session_if_needed()`, clears `_bring_up_pending` (defangs the on-Info success arm), runs `pause_provisioning_sensitive_services()`, opens the page via `UIManager::open_provisioning()`, kicks off the transport, and ends with `update_display(wait=true)`. Used by the STA-fail bring-up path and by post-online `auth_failed`. |
+| `leave_session_to_home()` | Success-path leave. Clears the `Connected!` page state, calls `UIManager::reset_to_home()`, polls the BMS once for a fresh battery icon, resumes paused services, rebases periodic clocks, silently unlocks, clears the session gate, and ends with `update_display(wait=true) + DisplayService::flush()`. Used by both STA-only success (Info) and provisioning-success (Provisioning). |
+| `leave_session_to_portable()` | Cancel / abort path. Mirrors the success leave but routes through `change_mode(Portable)` (which fires its own `"Mode changed"` snackbar). The session gate stays true through `change_mode()` so any background-render path that fires mid-teardown still no-ops. |
+| `rebase_periodic_clocks()` | Roll `_last_measurement_ms` / `_last_bms_poll_ms` / `_last_bms_status_poll_ms` forward to `now` on resume so paused timers do not fire back-to-back catching up. The external watchdog clock is deliberately not rebased. |
+
+### Service Pause and Resume
+
+`pause_provisioning_sensitive_services()` is called inside
+`enter_provisioning_page()` immediately before
+`WifiService::start_provisioning()`. It stops the sensor producer,
+idles the GNSS receiver if GPS is active, and drops the PM sensor power
+rail so the Wi-Fi driver has enough DMA-capable contiguous heap while
+the provisioning transport stack is active.
+`resume_provisioning_sensitive_services()` re-enables PM, restarts the
+sensor producer and GPS, and requests one immediate measurement so the
+post-resume display refreshes promptly. The pause is idempotent — the
+STA-only `Screen::Info` bring-up phase never triggers it.
+
+Sensor-measurement, BMS full poll, BMS status poll, PM pre-wake, and
+snackbar-refresh deadlines are all gated on
+`_provisioning_sensitive_services_paused`. The auto-lock deadline is
+gated on the broader `_setup_session_active` so users on
+`Screen::Info` (where polls still run) are not auto-locked out.
+
+### Disconnect Policy
+
+`on_wifi_disconnected(reason)` runs only in Stationary mode and reads
+`WifiService::has_been_online()` to split the policy:
+
+| Reason | Before First Online | After First Online |
+|---|---|---|
+| `auth_failed` | Open provisioning | Open provisioning |
+| `no_ap_found` | Open provisioning | Stay disconnected |
+| `assoc_failed` | Open provisioning | Stay disconnected |
+| `dhcp_failed` | Open provisioning | Stay disconnected |
+| `connection_lost` (real or synthetic from deadline expiry) | Open provisioning | Stay disconnected |
+| `ap_disconnected` / `handshake_failed` / `unknown` | Stay (the bring-up timeout will eventually synthesize `connection_lost`) | Stay disconnected |
+| `requested_by_user` | Ignore | Ignore |
+
+`auth_failed` always opens provisioning because the stored credentials
+are no longer trustworthy. Post-online retry exhaustion leaves the
+device in Stationary with the status-bar Wi-Fi icon showing
+disconnected; user recovery is mode switch, factory reset, or reboot.
+There is no outer-loop reconnect scheduler.
+
+### Provisioning Event Routing
+
+`on_provisioning_state_changed(payload)` updates the Provisioning page
+state and handles two terminal events:
+
+- **`Connected`** — persist `disable_cloud` and `static_ip` from the
+  payload, push `set_disable_cloud()` to `CloudService`, render
+  `Connected! a.b.c.d` with `update_display(wait=true) + flush()` so
+  the success frame is painted before any hold, call
+  `WifiService::stop_provisioning()` (whose internal
+  `POST_CONNECT_HOLD_MS` provides the ~1.5 s on-page dwell), then
+  `leave_session_to_home()`, then `cloud.start()` +
+  `cloud.arm(/*fire_now=*/true)` so the first POST fires immediately.
+- **`Stopped`** (without `has_been_online()`) — user abort, inactivity
+  timeout, or a transport-switch start failure. Falls back to Portable
+  via `leave_session_to_portable()` so the device is never stranded on
+  the Provisioning screen with no active transport.
+
+Other events (`Started`, `Connecting`, `ConnectFailed`,
+`SwitchingTransport`) update `UIManager::set_provisioning_ui_state()`
+and run a non-blocking display update.
+
+### STA-Only Success
+
+`on_wifi_connected(ip)` branches on `_bring_up_pending`:
+
+- True (initial Stationary bring-up): show `Connected!\n<a.b.c.d>` on
+  `Screen::Info` formatted via `format_ipv4_be`, queue + flush the
+  frame, hold `STA_SUCCESS_HOLD_MS` (500 ms) post-paint, then
+  `leave_session_to_home()`. No snackbar fires — the on-page text is
+  the success ack.
+- False, on `Screen::Home`, and no active session: post-online
+  reconnect. Show the `"Wi-Fi connected"` snackbar.
+- Otherwise (stray late event during the session, or the user is on a
+  menu / session screen): UI is ignored, but cloud transport still
+  resumes.
+
+After the UI branch, `cloud.start()` (idempotent) and
+`cloud.arm(_cloud_first_post_pending)` run unconditionally on every
+Stationary IP transition. See [`cloud_service.md`](cloud_service.md).
 
 ## Display Update
 
@@ -303,11 +503,15 @@ Display-update call sites are split into two categories:
 `on_ble_auth_complete()`, `on_ble_config_write()` (Set branch),
 `on_bms_status_timer()`, snackbar refresh timer in `check_timers()`.
 
-`request_background_display_update()` delegates to
-`UIManager::is_on_menu_screen()` to decide whether to suppress:
+`request_background_display_update()` short-circuits when a setup
+session is active and otherwise delegates to
+`UIManager::is_on_menu_screen()`:
 
 ```cpp
 void Orchestrator::request_background_display_update() {
+  if (_setup_session_active) {
+    return; // session screens only re-render on explicit transitions
+  }
   if (!_svc.ui_manager.is_on_menu_screen()) {
     update_display();
   }
@@ -315,13 +519,29 @@ void Orchestrator::request_background_display_update() {
 ```
 
 When the user is on any menu-navigation screen (MainMenu, Settings,
-SettingsChoice, TagList, Confirm, About), background events still update
-data caches, send BLE notifications, etc. — only the e-paper refresh is
-skipped. The display catches up on the next user-initiated repaint (input,
-lock/unlock, or returning to Home).
+SettingsChoice, TagList, Confirm, About) or anywhere inside the setup
+session (`Info`, `Provisioning`, `ProvisioningConfirm`), background
+events still update data caches, send BLE notifications, etc. — only
+the e-paper refresh is skipped. The display catches up on the next
+user-initiated repaint (input, lock/unlock, returning to Home, or the
+explicit `update_display(wait=true)` calls from the setup session
+helpers).
 
-The orchestrator does not choose refresh tiers (Full/Fast/Partial). That
-decision belongs entirely to `DisplayService::update()`.
+### Drop-Free Renders for Critical Transitions
+
+`update_display(bool wait)` forwards to
+`DisplayService::update(values, wait)`. The session helpers and the
+`Connected` event handler use `wait=true` so a new frame queues without
+being dropped even when the worker is mid-paint on a prior frame. When
+the next caller-observable action depends on the new frame having
+finished painting (the 500 ms `STA_SUCCESS_HOLD_MS` dwell on Info, the
+component-side `POST_CONNECT_HOLD_MS` on Provisioning, the
+`SwitchingTransport` ack before the transport flips, and both leave
+helpers), the call is followed by `DisplayService::flush()` which spins
+until `_worker_busy` clears.
+
+The orchestrator does not choose refresh tiers (Full/Fast/Partial).
+That decision belongs entirely to `DisplayService::update()`.
 
 ## Sleep Cycle
 
@@ -391,6 +611,12 @@ PM sensor via `set_pm_power(false)` to save fan current until the next
 pre-wake timer fires.  Sensor failures are immediately visible (display
 shows dashes) rather than masked by stale cached data.
 
+Every `SensorDataReady` event logs one multi-line `MeasuresAGo` snapshot
+with the full AGo sensor set: temperature, humidity, PM mass, PM particle
+counts, CO2, TVOC / NOx, power, pressure, and altitude. Invalid sentinels
+pass through unchanged so logs match what the cache and cloud snapshot
+received.
+
 ### PM Sensor Power-Cycling
 
 When `mode != Offline` and `measure_interval_seconds * 1000 >=
@@ -431,6 +657,15 @@ Added to `go_display.h` in the `#else` branch of the `#ifndef TEST_HOST`
 guard. Provides a no-op `DisplayService` class with matching method
 signatures so the Orchestrator compiles without conditional compilation in
 host test builds.
+
+## Diagnostics
+
+Heap-pressure paths log `free`, `min`, and largest default-capable heap via
+the shared `log_heap()` helper. Probes cover boot path handoff, BLE init,
+mode changes, BMS full-poll ticks, Stationary Wi-Fi entry, provisioning
+pause / resume, cloud start / stop / POST / FETCH, Wi-Fi connected /
+disconnected routing, and sleep preparation. The helper compiles to a
+no-op under `TEST_HOST`.
 
 ## Design Decisions
 

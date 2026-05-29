@@ -126,15 +126,14 @@ void run_test_http_server() {
   // test loops forever.
   auto *server = new IdfHttpServer();
 
+  // --- Pre-start routes: static assets and status -------------------------
   bool ok = true;
   ok &= server->register_route(HttpMethod::Get, "/api/status", handle_status);
-  ok &= server->register_route(HttpMethod::Post, "/api/echo", handle_echo);
-  ok &= server->register_route(HttpMethod::Get, "/api/greet", handle_greet);
   ok &= server->register_static("/", index_html_start, index_html_end, "text/html");
   ok &= server->register_static("/index.html", index_html_start, index_html_end, "text/html");
 
   if (!ok) {
-    ESP_LOGE(TAG, "route registration failed");
+    ESP_LOGE(TAG, "pre-start route registration failed");
     return;
   }
 
@@ -144,6 +143,18 @@ void run_test_http_server() {
   }
 
   ESP_LOGI(TAG, "HTTP server listening on port %d", CONFIG_AG_HTTP_PORT);
+
+  // --- Post-start routes: added to the running server --------------------
+  ok = true;
+  ok &= server->register_route(HttpMethod::Post, "/api/echo", handle_echo);
+  ok &= server->register_route(HttpMethod::Get, "/api/greet", handle_greet);
+
+  if (!ok) {
+    ESP_LOGE(TAG, "post-start route registration failed");
+    return;
+  }
+
+  ESP_LOGI(TAG, "dynamic routes registered on running server");
 
   // Keep this task alive so the server stays up.
   while (true) {

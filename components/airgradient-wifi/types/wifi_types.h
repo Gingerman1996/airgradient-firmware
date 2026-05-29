@@ -53,6 +53,32 @@ enum class WifiAuthMode : uint8_t {
   unknown,
 };
 
+inline const char *wifi_auth_mode_to_string(WifiAuthMode m) {
+  switch (m) {
+  case WifiAuthMode::open:
+    return "open";
+  case WifiAuthMode::wep:
+    return "wep";
+  case WifiAuthMode::wpa_psk:
+    return "wpa_psk";
+  case WifiAuthMode::wpa2_psk:
+    return "wpa2_psk";
+  case WifiAuthMode::wpa_wpa2_psk:
+    return "wpa_wpa2_psk";
+  case WifiAuthMode::wpa3_psk:
+    return "wpa3_psk";
+  case WifiAuthMode::wpa2_wpa3_psk:
+    return "wpa2_wpa3_psk";
+  case WifiAuthMode::wapi_psk:
+    return "wapi_psk";
+  case WifiAuthMode::owe:
+    return "owe";
+  case WifiAuthMode::unknown:
+  default:
+    return "unknown";
+  }
+}
+
 enum class WifiDisconnectReason : uint8_t {
   unknown,
   auth_failed,
@@ -77,6 +103,9 @@ enum class WifiStatus : uint8_t {
   InvalidState,
   InvalidArgument,
   AlreadyInProgress,
+  /// Returned when empty SSID is passed but no STA credentials are
+  /// persisted in NVS. See WifiStaConfig::ssid.
+  NotFound,
 };
 
 // -- Data Structs --
@@ -95,11 +124,16 @@ struct WifiScanConfig {
 };
 
 struct WifiStaConfig {
+  /// Empty string = use NVS-saved credentials. NotFound is returned if
+  /// none are persisted.
   char ssid[33] = {};
-  char password[64] = {};
+  char password[64] = {};      // ignored when ssid is empty
   uint8_t max_retry_count = 5; // 0 = no auto-retry
   uint32_t initial_retry_interval_ms = 1000;
   uint32_t max_retry_interval_ms = 30000; // backoff cap
+  /// false = RAM-only set_config; do not pin this AP in NVS. For
+  /// factory-default fallback connects. Ignored on saved-creds path.
+  bool persist = true;
 };
 
 struct WifiApConfig {

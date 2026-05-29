@@ -19,9 +19,8 @@
 #include "types/http_types.h"
 
 // esp_http_server-backed implementation of HttpServer. Owns the httpd
-// handle and the route table. All routes must be registered before
-// calling start(); subsequent register_route() calls after start() will
-// fail.
+// handle and the route table. Routes may be registered or unregistered
+// at any time — before or after start().
 class IdfHttpServer : public HttpServer {
 public:
   IdfHttpServer();
@@ -33,6 +32,8 @@ public:
   bool start(uint16_t port) override;
   void stop() override;
   bool register_route(HttpMethod method, const char *path, HttpHandler handler) override;
+  bool unregister_route(HttpMethod method, const char *path) override;
+  void unregister_all() override;
 
 private:
   struct Route {

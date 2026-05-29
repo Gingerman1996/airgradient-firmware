@@ -7,10 +7,19 @@
 
 #include "drivers/bq25629/bq25629_bms.h"
 
+#include <cinttypes>
+#include <cmath>
+
 #include "esp_log.h"
 #include "rtos.h"
 
 static constexpr const char *TAG = "BQ25629Bms";
+
+/// Valid range for battery NTC temperature.  Anything outside this band
+/// (including the vendor's -999.0f sentinel, NaN, or obviously-bogus
+/// values) collapses to BmsInvalid::TEMPERATURE_C.
+static constexpr float BATTERY_TEMP_VALID_MIN_C = -40.0f;
+static constexpr float BATTERY_TEMP_VALID_MAX_C = 100.0f;
 
 static BmsPowerSource map_vbus_status(drivers::VBusStatus vs);
 
@@ -70,7 +79,7 @@ bool BQ25629Bms::init() {
   drivers::VBusStatus raw_vbus_status{};
   err = _charger.get_vbus_status(raw_vbus_status);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "get_vbus_status failed during init: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "disable_hiz_mode failed: %s", esp_err_to_name(err));
     return false;
   }
   const BmsPowerSource power_source = map_vbus_status(raw_vbus_status);
@@ -84,7 +93,7 @@ bool BQ25629Bms::init() {
     return false;
   }
 
-  ESP_LOGI(TAG, "BQ25629Bms initialized");
+  ESP_LOGI(TAG, "BQ25629Bms initialized (boost ready, disarmed)");
   return true;
 }
 
@@ -264,12 +273,57 @@ bool BQ25629Bms::enter_ship_mode() {
 }
 
 // ---------------------------------------------------------------------------
-// BmsDevice -- PMID mode
+// BmsDevice -- power-path control
 // ---------------------------------------------------------------------------
 
-bool BQ25629Bms::configure_pmid_mode(BmsPmidMode mode) {
-  if (mode == BmsPmidMode::Unknown) {
-    ESP_LOGW(TAG, "configure_pmid_mode: refusing Unknown mode");
+bool BQ25629Bms::set_pmid_enabled(bool enabled) {
+  esp_err_t err = _charger.enable_otg(enabled);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "set_pmid_enabled(%s) failed: %s", enabled ? "true" : "false",
+             esp_err_to_name(err));
+    return false;
+  }
+  _pmid_enabled = enabled;
+  return true;
+}
+
+bool BQ25629Bms::set_charge_enable(bool enabled) {
+  esp_err_t err = _charger.enable_charging(enabled);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "set_charge_enable(%s) failed: %s", enabled ? "true" : "false",
+             esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+bool BQ25629Bms::set_charge_current_ma(uint16_t current_ma) {
+  esp_err_t err = _charger.set_charge_current(current_ma);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "set_charge_current_ma(%u) failed: %s", current_ma, esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+bool BQ25629Bms::set_watchdog_timeout_ms(uint32_t timeout_ms) {
+  // Map milliseconds to the closest supported WatchdogTimeout enum value
+  // at or above the requested period.
+  drivers::WatchdogTimeout wdt;
+  if (timeout_ms == 0) {
+    wdt = drivers::WatchdogTimeout::Disable;
+  } else if (timeout_ms <= 50000) {
+    wdt = drivers::WatchdogTimeout::Sec50;
+  } else if (timeout_ms <= 100000) {
+    wdt = drivers::WatchdogTimeout::Sec100;
+  } else {
+    wdt = drivers::WatchdogTimeout::Sec200;
+  }
+
+  esp_err_t err = _charger.set_watchdog_timeout(wdt);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "set_watchdog_timeout_ms(%" PRIu32 ") failed: %s", timeout_ms,
+             esp_err_to_name(err));
     return false;
   }
 

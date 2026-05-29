@@ -19,7 +19,7 @@ in the NimBLE task and post lightweight events to the orchestrator queue.
 
 | Dependency | Source | Usage |
 |---|---|---|
-| `NimbleBleServer` | `airgradient-ble` (`drivers/nimble_ble_server.h`) | Concrete NimBLE-backed BLE server (static instance in `init()`) |
+| `NimbleBleServer` | `airgradient-ble` (`drivers/nimble_ble_server.h`) | Concrete NimBLE-backed BLE server; constructed lazily by `GoBoard::ble_server()` and borrowed by `BleService` (and by `WifiService` for the Stationary provisioning transport) |
 | `AgBleServer`, `AgBleGattService`, `AgBleCharacteristic` | `airgradient-ble` (`hal/ble_server.h`) | Abstract BLE HAL interfaces |
 | `AgBleProperty`, `AgBleIoCapability`, `AgBleAuth` | `airgradient-ble` (`hal/ble_types.h`) | Property flags, security enums, callback typedefs |
 | `espressif/cbor` | ESP-IDF managed dependency (`^0.6.0~1`) | TinyCBOR `CborEncoder` for all CBOR payloads |
@@ -673,9 +673,9 @@ sequenceDiagram
 
 | Method | Description |
 |---|---|
-| `BleService(event_queue, storage)` | Constructor. `event_queue` is `RtosQueueHandle`, `storage` is `StorageService&`. |
-| `init(serial)` | Init NimBLE, register GATT, configure security, start advertising. Returns `false` on failure. Uses a `static NimbleBleServer` instance. |
-| `deinit()` | Stop advertising, disconnect, tear down. Resets all char pointers to `nullptr`, `_connected` to false, `_export_active` to false. Safe to call when not initialized. |
+| `BleService(event_queue, storage, ble_server)` | Constructor. `event_queue` is `RtosQueueHandle`, `storage` is `StorageService&`, `ble_server` is the borrowed `AgBleServer&` shared with the Stationary provisioning transport. The orchestrator enforces mutual exclusion across operating modes: Portable owns the server through `BleService`; Stationary provisioning owns it through `WifiService::ProvisioningManager`. |
+| `init(serial)` | Init NimBLE, register GATT, configure security (`DISPLAY_ONLY` + `BOND \| MITM` when `CONFIG_AGO_BLE_SECURITY_ENABLED`), start advertising. Returns `false` on failure. Latches `_initialized = true` on success. |
+| `deinit()` | Stop advertising, disconnect, tear down. Resets all char pointers to `nullptr`, `_connected` to false, `_export_active` to false, `_initialized` to false. Safe to call when not initialized. |
 
 ### Data Output (called by orchestrator)
 
@@ -710,7 +710,7 @@ sequenceDiagram
 
 | Method | Implementation | Description |
 |---|---|---|
-| `is_initialized()` | `_server != nullptr` | True after successful `init()`, false after `deinit()`. |
+| `is_initialized()` | `_initialized` | True after successful `init()`, false after `deinit()`. The `_server` pointer is always non-null (borrowed from the board for the lifetime of the service), so the previous `_server != nullptr` gate is no longer valid. |
 | `is_connected()` | `_connected.load()` | `std::atomic<bool>`, thread-safe. |
 
 ---
@@ -767,7 +767,7 @@ below 128 is unlikely in practice.
 
 | Scenario | Behavior | Location |
 |---|---|---|
-| BLE stack init fails | `init()` returns `false`, `_server` stays `nullptr` | `go_ble.cpp:112` |
+| BLE stack init fails | `init()` returns `false`, `_initialized` stays `false` | `go_ble.cpp` |
 | `set_security()` fails | `init()` returns `false` after `_server->deinit()` | `go_ble.cpp:119` |
 | Any characteristic creation fails | `init()` returns `false` after cleanup | `go_ble.cpp:139-177` |
 | Service `start()` fails | `init()` returns `false` after cleanup | `go_ble.cpp:186` |
@@ -868,8 +868,16 @@ vector. History delete uses `delete_route()`. Status reporting uses
 
 ### Mode Transitions
 
-- **Entering Portable**: `ble_service.init(serial)`.
-- **Leaving Portable**: `ble_service.deinit()`.
+- **Entering Portable** (from any other mode): `ble_service.init(serial)`.
+- **Leaving Portable** (to any other mode): dismiss the pairing passkey
+  overlay (`ui_manager.dismiss_pairing_passkey()`), then
+  `ble_service.deinit()`. Tearing down before bringing up the next
+  mode's owner enforces the mutual-exclusion contract on the borrowed
+  `AgBleServer`.
+
+The board's `AgBleServer` is shared across modes; the orchestrator
+guarantees that at most one owner (`BleService` in Portable,
+`WifiService::ProvisioningManager` in Stationary) drives it at a time.
 
 ### Sensor Data Flow
 
@@ -974,9 +982,11 @@ The BLE service is fully integrated with the current AGo product code:
 
 ## Testability
 
-Only `init()` is guarded with `#ifndef TEST_HOST` (it instantiates the
-concrete `NimbleBleServer`). All other methods use the abstract `AgBleServer*`
-interface and compile under host tests.
+Only `init()` is guarded with `#ifndef TEST_HOST` (it drives the
+ESP-IDF / NimBLE stack via the borrowed server pointer). All other
+methods use the abstract `AgBleServer*` interface and compile under
+host tests. Host tests inject a mock server through the constructor —
+the service no longer constructs a `static NimbleBleServer` itself.
 
 ### Host Tests
 

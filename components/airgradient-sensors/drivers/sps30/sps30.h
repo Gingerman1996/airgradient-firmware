@@ -18,16 +18,21 @@
  * @brief SPS30 particulate matter sensor driver (Sensirion)
  *
  * Communicates with sensor using I2C protocol (100 kHz).
- * Provides mass concentrations (PM1.0, PM2.5, PM4.0, PM10) and number
- * concentrations (PM0.5, PM1.0, PM2.5, PM4.0, PM10).
+ * Provides mass concentrations (PM1.0, PM2.5, PM4.0, PM10) in ug/m^3 and
+ * number concentrations (PM0.5, PM1.0, PM2.5, PM4.0, PM10) in #/cm^3.
  *
- * Mapped to PMData:
- * - Atmospheric: pm_01 (PM1.0), pm_25 (PM2.5), pm_10 (PM10)
- * - Standard particle: left as invalid (SPS30 provides single concentration
+ * Mapped to PMData using same-named bins only. Number concentrations are
+ * scaled by 100 to convert #/cm^3 -> #/0.1L so the units match the PMS5003
+ * convention used elsewhere in PMData.
+ * - Atmospheric mass: pm_01 (PM1.0), pm_25 (PM2.5), pm_10 (PM10)
+ * - Standard particle: left as invalid (SPS30 reports a single concentration
  *   set, not CF=1 vs atmospheric)
- * - Particle counts: pm_03_pc (PM0.5 number), pm_05_pc (PM1.0 number),
- *   pm_01_pc (PM2.5 number), pm_25_pc (PM4.0 number), pm_10_pc (PM10 number)
- * - pm_5_pc: left as invalid (SPS30 has no 5.0um particle count)
+ * - Particle counts: pm_05_pc (PM0.5 number), pm_01_pc (PM1.0 number),
+ *   pm_25_pc (PM2.5 number), pm_10_pc (PM10 number); each multiplied by 100
+ * - pm_03_pc: left as invalid (SPS30 has no 0.3um particle count)
+ * - pm_5_pc:  left as invalid (SPS30 has no 5.0um particle count)
+ * - SPS30 PM4.0 mass and PM4.0 number are read but not exposed (no PMData
+ *   field with matching size bin)
  *
  * Does not support temperature and humidity.
  */

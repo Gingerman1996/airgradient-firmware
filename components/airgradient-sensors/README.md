@@ -84,7 +84,7 @@ sensor type is as simple as leaving its pointer null.
 |---|---|---|---|
 | `drivers/sht40` | Sensirion SHT40 | I2C | Temperature + humidity |
 | `drivers/pms5003` | Plantower PMS5003 / PMS5003T | Serial (UART or I2C-to-UART bridge) | PM. PMS5003T variant exposes temp/hum |
-| `drivers/sps30` | Sensirion SPS30 | I2C | PM mass + number concentrations. Standard-particle and `pm_5_pc` left as invalid sentinels |
+| `drivers/sps30` | Sensirion SPS30 | I2C | PM mass + number concentrations. Standard-particle, `pm_03_pc`, and `pm_5_pc` left as invalid sentinels |
 | `drivers/s8` | SenseAir S8 | Modbus RTU over serial | CO2 |
 | `drivers/sunlight` | SenseAir Sunlight | Modbus RTU over serial | CO2 |
 | `drivers/s12` | SenseAir S12 | I2C | CO2; reads a single big-endian 16-bit register (default 0x06/0x07 = filtered, pressure-compensated). `init()` / `read()` only — no integrated temp/hum, no calibration |
@@ -94,6 +94,25 @@ sensor type is as simple as leaving its pointer null.
 | `drivers/alpha_sense` | AlphaSense O3 / NO2 | I2C (dual ADS1115) | Electrochemical front-end |
 | `drivers/dps368` | Infineon DPS368 | I2C | Pressure |
 | `drivers/co2_common` | (helper) | — | Shared Modbus CRC helper used by S8 and Sunlight |
+
+### SPS30 Particle-Count Mapping
+
+SPS30 reports number concentrations in particles per cm³. The shared
+`PMData` convention follows PMS5003 units, particles per 0.1 L, so the
+driver multiplies SPS30 counts by 100 before publishing them.
+
+Only same-named bins are mapped:
+
+| SPS30 value | `PMData` field |
+|---|---|
+| PM0.5 number | `pm_05_pc` |
+| PM1.0 number | `pm_01_pc` |
+| PM2.5 number | `pm_25_pc` |
+| PM10 number | `pm_10_pc` |
+
+SPS30 PM4.0 mass / number have no matching `PMData` field and are not
+exposed. `pm_03_pc` and `pm_5_pc` remain invalid because SPS30 does not
+report PM0.3 or PM5.0 count bins.
 
 ## SensorManager
 

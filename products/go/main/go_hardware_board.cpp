@@ -20,6 +20,7 @@
 #include <esp_app_desc.h>
 #include <nvs_flash.h>
 
+#include "ag_i2c.h"
 #include "ag_log.h"
 #include "airgradient_uart.h"
 #include "backends/rtc_payload_cache_storage.h"
@@ -46,12 +47,36 @@
 #include "spi_nand_storage.h"
 
 #include "board_config.h"
+#include "drivers/esp_wifi_hal.h"
+#include "drivers/idf_http_server.h"
 #include "go_display.h"
 #include "go_power.h"
 #include "go_storage.h"
 #include "go_ulp.h"
+#include "nimble_ble_server.h"
+#include "services/ag_client.h"
+#include "services/wifi_manager.h"
 
 static constexpr const char *TAG = "board";
+
+// ---------------------------------------------------------------------------
+// Fuel-gauge cell configuration — validated on hardware against AGo's
+// single-cell 2000 mAh Li-ion pack.  Revisit if cell sourcing changes.
+// ---------------------------------------------------------------------------
+
+static constexpr FgCellConfig AGO_CELL_CONFIG = {
+    .design_capacity_mah = 2000,
+    .design_energy_mwh = 7400,
+    .terminate_voltage_mv = 3000,
+    .sleep_current_ma = 50,
+};
+
+// FG DM corruption sanity ranges.  A reading outside any of these
+// ranges is treated as evidence of a corrupted persistent block
+// (most commonly a prior aborted CFGUPDATE).
+static constexpr uint16_t FG_DC_SANITY_MIN_MAH = 500;
+static constexpr uint16_t FG_DC_SANITY_MAX_MAH = 8000;
+static constexpr uint16_t FG_FCC_SANITY_MAX_MAH = 8500;
 
 // ===========================================================================
 // Private helper: CO2 sensor detection
@@ -109,7 +134,10 @@ void GoHardwareBoard::init_buses() {
   if (_buses_ready)
     return;
 
-  // GPIO power enables
+  // GPIO power enables — write a safe-default level before variant detection.
+  // Level 1 is safe on both variants:
+  //   Prototype (active-high): level 1 = PM ON (matches existing behavior)
+  //   v1       (active-low):   level 1 = PM OFF (safe before detection)
   auto &hal = gpio::native::hal;
   hal.configure(PIN_PM_POWER, gpio::Mode::Output, gpio::PullMode::Floating,
                 gpio::InterruptType::Disabled);
@@ -135,6 +163,26 @@ void GoHardwareBoard::init_buses() {
   };
   ESP_ERROR_CHECK(i2c_new_master_bus(&config, &_i2c_bus));
   AG_LOGI(TAG, "I2C bus ready");
+
+  RTOS::delay_ms(100);
+
+  // Board variant detection — probe BQ27427 fuel gauge at 0x55.
+  // ACK = v1 board; NACK / transport error = prototype (fail-safe).
+  constexpr uint8_t BQ27427_PROBE_ADDR = 0x55;
+  constexpr int BQ27427_PROBE_TIMEOUT_MS = 100;
+
+  const bool fg_present =
+      i2c_device_present(_i2c_bus, BQ27427_PROBE_ADDR, BQ27427_PROBE_TIMEOUT_MS);
+  _variant = fg_present ? BoardVariant::V1 : BoardVariant::Prototype;
+  AG_LOGI(TAG, "board variant: %s (BQ27427 @ 0x55 %s)", board_variant_str(_variant),
+          fg_present ? "ACK" : "NACK");
+
+  // Drive PM_POWER to the variant-appropriate "ON" level.
+  // Prototype: already at 1 (safe-default above), no write needed.
+  // v1: write level 0 (active-low PM ON).
+  if (_variant == BoardVariant::V1) {
+    hal.set_level(PIN_PM_POWER, pm_power_on_level(_variant));
+  }
 
   RTOS::delay_ms(100);
   _buses_ready = true;
@@ -254,6 +302,25 @@ void GoHardwareBoard::init_bms() {
   _bms_ready = true;
 }
 
+void GoHardwareBoard::init_wifi_subsystem() {
+  if (_wifi_inited)
+    return;
+
+  // Construct the HAL on demand if no accessor call beat us to it.
+  // EspWifiHal::init() drives nvs_flash_init, esp_netif_init, the system
+  // event loop, esp_wifi_init, default storage mode, event handlers, and
+  // the single-shot timers used by Wi-Fi.  Idempotent inside the HAL as
+  // well; the board-layer flag avoids re-entering the HAL call entirely
+  // after the first success.
+  WifiHal &hal = wifi_hal();
+  const WifiStatus status = hal.init();
+  if (status != WifiStatus::Ok) {
+    AG_LOGE(TAG, "wifi subsystem init failed (status=%d)", static_cast<int>(status));
+    return;
+  }
+  _wifi_inited = true;
+}
+
 void GoHardwareBoard::init_core() {
   init_nvs();
   init_buses();
@@ -314,6 +381,7 @@ BmsDevice &GoHardwareBoard::bms() {
 SensorManager &GoHardwareBoard::sensors(bool warm) {
   assert(_buses_ready && "sensors() requires init_buses()");
   assert(_bms_ready && "sensors() requires init_bms()");
+  assert(_power_ready && "sensors() requires power()");
   if (!_sensor_manager) {
     auto *sgp41 = new SGP41(_i2c_bus, I2C_ADDR_SGP41);
     auto *sht40 = new SHT40(_i2c_bus, I2C_ADDR_SHT40);
@@ -392,6 +460,58 @@ DisplayService &GoHardwareBoard::display() {
   return *_display;
 }
 
+// ===========================================================================
+// Lazy radio accessors
+//
+// Construction is side-effect-free:
+//   * EspWifiHal()        — pure C++ init; no driver calls until init().
+//   * WifiManager(hal)    — only registers std::function callbacks on the HAL
+//                           (esp_wifi_hal.cpp:425-442); never touches the
+//                           driver.  Safe against an uninitialised HAL.
+//   * IdfHttpServer()     — stores nothing until start().
+//   * NimbleBleServer()   — defaulted; NimBLEDevice singleton untouched until
+//                           init(name).
+// ===========================================================================
+
+WifiHal &GoHardwareBoard::wifi_hal() {
+  if (!_wifi_hal) {
+    _wifi_hal = new EspWifiHal();
+  }
+  return *_wifi_hal;
+}
+
+WifiManager &GoHardwareBoard::wifi_manager() {
+  if (!_wifi_manager) {
+    _wifi_manager = new WifiManager(wifi_hal());
+  }
+  return *_wifi_manager;
+}
+
+HttpServer &GoHardwareBoard::http_server() {
+  if (!_http_server) {
+    _http_server = new IdfHttpServer();
+  }
+  return *_http_server;
+}
+
+AgBleServer &GoHardwareBoard::ble_server() {
+  if (!_ble_server) {
+    _ble_server = new NimbleBleServer();
+  }
+  return *_ble_server;
+}
+
+AgClient &GoHardwareBoard::ag_client() {
+  if (!_ag_client) {
+    _ag_client = new AgClient();
+    const std::string serial = build_serial_number();
+    if (!_ag_client->begin(serial.c_str(), NetworkType::Wifi)) {
+      AG_LOGE(TAG, "ag_client: begin() failed (serial=%s)", serial.c_str());
+    }
+  }
+  return *_ag_client;
+}
+
 PowerService &GoHardwareBoard::power() {
   assert(_bms_ready && "power() requires init_bms()");
   if (!_power) {
@@ -402,6 +522,7 @@ PowerService &GoHardwareBoard::power() {
                                   .pin_ext_wdt = PIN_EXT_WDT,
                                   .deep_sleep_threshold_ms = 5000,
                                   .pin_pm_power = PIN_PM_POWER,
+                                  .pm_power_on_level = pm_power_on_level(_variant),
                                   .sensor_hold_max_sleep_ms = 20000,
                               });
     if (_fuel_gauge != nullptr && _fuel_gauge->ready()) {
@@ -409,6 +530,10 @@ PowerService &GoHardwareBoard::power() {
     }
     _power->init_ext_watchdog();
     _power->reset_ext_watchdog();
+    if (_fuel_gauge != nullptr && _fuel_gauge->ready()) {
+      _power->set_fuel_gauge(_fuel_gauge);
+    }
+    _power_ready = true;
   }
   return *_power;
 }
@@ -471,6 +596,11 @@ LP5036 *GoHardwareBoard::new_led_driver() {
 // ===========================================================================
 // Platform info
 // ===========================================================================
+
+BoardVariant GoHardwareBoard::variant() const {
+  assert(_buses_ready && "variant() requires init_buses()");
+  return _variant;
+}
 
 std::string GoHardwareBoard::serial_number() { return build_serial_number(); }
 

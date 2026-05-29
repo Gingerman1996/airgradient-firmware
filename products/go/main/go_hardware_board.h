@@ -5,9 +5,11 @@
 
 #include <driver/i2c_master.h>
 
+class AgClient;
 class BQ25629Bms;
 class BQ27427;
 class NvsConfigStore;
+class WifiManager;
 
 /// Real hardware implementation of GoBoard for the AGo board.
 ///
@@ -20,6 +22,7 @@ public:
   void init_buses() override;
   void init_spi() override;
   void init_bms() override;
+  void init_wifi_subsystem() override;
   void init_core() override;
 
   // --- Lazy service accessors ---
@@ -31,12 +34,20 @@ public:
   DisplayService &display() override;
   PowerService &power() override;
 
+  // --- Lazy radio accessors ---
+  WifiHal &wifi_hal() override;
+  WifiManager &wifi_manager() override;
+  HttpServer &http_server() override;
+  AgBleServer &ble_server() override;
+  AgClient &ag_client() override;
+
   // --- Per-call factories ---
   GpsDriver *new_gps_driver() override;
   CapTouchSensor *new_touch_sensor() override;
   LP5036 *new_led_driver() override;
 
   // --- Platform ---
+  BoardVariant variant() const override;
   std::string serial_number() override;
   const char *firmware_version() override;
   const gpio::Hal &gpio_hal() override;
@@ -47,11 +58,16 @@ public:
   void remove_button_isr(int pin) override;
 
 private:
+  // Board variant (detected in init_buses, fail-safe default: Prototype)
+  BoardVariant _variant = BoardVariant::Prototype;
+
   // Init tracking (idempotency)
   bool _nvs_ready = false;
   bool _buses_ready = false;
   bool _spi_ready = false;
   bool _bms_ready = false;
+  bool _power_ready = false;
+  bool _wifi_inited = false;
 
   // Bus handles
   i2c_master_bus_handle_t _i2c_bus = nullptr;
@@ -66,4 +82,11 @@ private:
   StorageService *_storage = nullptr;
   DisplayService *_display = nullptr;
   PowerService *_power = nullptr;
+
+  // Radio infrastructure (lazy, never freed)
+  EspWifiHal *_wifi_hal = nullptr;
+  WifiManager *_wifi_manager = nullptr;
+  IdfHttpServer *_http_server = nullptr;
+  NimbleBleServer *_ble_server = nullptr;
+  AgClient *_ag_client = nullptr;
 };

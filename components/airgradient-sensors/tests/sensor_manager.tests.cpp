@@ -1299,6 +1299,40 @@ TEST_CASE("Averaging", "[SensorManager]") {
     REQUIRE_THAT(result.pressure.pressure, WithinAbs(1013.25f, 0.001f));
   }
 
+  SECTION("Product priority: DEDICATED wins over CO2 and PRESSURE for temp_hum_a") {
+    ALLOW_CALL(mock_rtos, get_time_ms_impl()).RETURN(0);
+    ALLOW_CALL(mock_rtos, delay_ms_impl(trompeloeil::_));
+
+    MockTempHumSensor mock_tempHum_local;
+    MockCO2Sensor mock_co2_local;
+    MockPressureSensor mock_pressure_local;
+    Sensors xsensors{};
+    xsensors.temp_hum = &mock_tempHum_local;
+    xsensors.co2 = &mock_co2_local;
+    xsensors.pressure = &mock_pressure_local;
+    xsensors.temp_hum_a_fallback.priority[0] = TempHumSource::DEDICATED;
+    xsensors.temp_hum_a_fallback.priority[1] = TempHumSource::CO2;
+    xsensors.temp_hum_a_fallback.priority[2] = TempHumSource::PRESSURE;
+    xsensors.temp_hum_a_fallback.count = 3;
+    SensorManager xsensor_manager(xsensors);
+
+    FORBID_CALL(mock_co2_local, supports_temp_hum());
+    FORBID_CALL(mock_co2_local, temp_hum_data());
+    FORBID_CALL(mock_pressure_local, supports_temp_hum());
+    FORBID_CALL(mock_pressure_local, temp_hum_data());
+
+    EXPECT_READ(mock_tempHum_local, (TempHumData{24.5f, 56.0f}), true);
+    EXPECT_READ(mock_co2_local, (CO2Data{460}), true);
+    EXPECT_READ(mock_pressure_local, (PressureData{1013.25f, 110.0f}), true);
+
+    auto result = xsensor_manager.start_measures(1);
+
+    REQUIRE_THAT(result.temp_hum_a.temperature, WithinAbs(24.5f, 0.001f));
+    REQUIRE_THAT(result.temp_hum_a.humidity, WithinAbs(56.0f, 0.001f));
+    REQUIRE(result.co2.co2 == 460);
+    REQUIRE_THAT(result.pressure.pressure, WithinAbs(1013.25f, 0.001f));
+  }
+
   SECTION("Priority: CO2 wins over PM_A and PRESSURE for temp_hum_a") {
     // When multiple sensors support temp/hum, only the highest-priority
     // source contributes to temp_hum_a (default: DEDICATED > CO2 > PM_A > PRESSURE)

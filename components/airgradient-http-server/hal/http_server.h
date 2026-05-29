@@ -21,20 +21,35 @@ class HttpServer {
 public:
   virtual ~HttpServer() = default;
 
-  // Bind and start listening on the given port. Must be called after all
-  // routes have been registered. Returns false on bind/start failure.
+  // Bind and start listening on the given port. Routes registered before
+  // this call are bulk-registered with the underlying server. Returns
+  // false on bind/start failure.
   // ISR-safe: no | Thread-safe: no | Blocking: yes
   virtual bool start(uint16_t port) = 0;
 
-  // Stop the server. Safe to call when not started.
+  // Stop the server. Safe to call when not started. Does not clear the
+  // route table; call unregister_all() after stop() for a clean slate.
   // ISR-safe: no | Thread-safe: no | Blocking: yes
   virtual void stop() = 0;
 
-  // Register a handler for an exact method + path combination. Must be
-  // called before start(). Returns false if registration fails (out of
-  // route slots, duplicate, etc.).
+  // Register a handler for an exact method + path combination. May be
+  // called before or after start(). Returns false if registration fails
+  // (out of route slots, duplicate, etc.).
   // ISR-safe: no | Thread-safe: no | Blocking: no | Allocates: yes
   virtual bool register_route(HttpMethod method, const char *path, HttpHandler handler) = 0;
+
+  // Remove a previously registered handler identified by method + path.
+  // May be called before or after start(). Returns true if the route was
+  // found and removed, false if not found or the underlying server
+  // rejected the removal.
+  // ISR-safe: no | Thread-safe: no | Blocking: no
+  virtual bool unregister_route(HttpMethod method, const char *path) = 0;
+
+  // Remove all registered routes. May be called before or after start().
+  // Use after stop() to get a clean slate before re-starting with
+  // different routes.
+  // ISR-safe: no | Thread-safe: no | Blocking: no
+  virtual void unregister_all() = 0;
 
   // Convenience: register a GET handler that serves a flash-embedded
   // asset. data_start / data_end come from ESP-IDF EMBED_FILES linker

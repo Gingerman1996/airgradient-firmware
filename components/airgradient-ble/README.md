@@ -14,7 +14,8 @@ This component owns:
 
 - BLE stack initialisation and teardown
 - GATT service and characteristic registration
-- BLE advertising control (local name, advertised service UUIDs)
+- BLE advertising control (local name, advertised service UUIDs,
+  manufacturer-specific data)
 - connect / disconnect event delivery via callbacks
 - per-characteristic write event delivery via callbacks
 - characteristic value updates and notifications to connected clients
@@ -79,6 +80,7 @@ svc->start();
 
 ble.set_advertising_name("MyDevice");
 ble.add_advertised_service_uuid("ABCD");
+ble.set_manufacturer_data(mfg_buf, mfg_len);  // optional
 ble.start_advertising();
 
 ch->set_value(data, len);
@@ -102,6 +104,7 @@ sequenceDiagram
     App->>Service: start()
     App->>Server: set_connect_callback / set_disconnect_callback
     App->>Server: set_advertising_name + add_advertised_service_uuid
+    App->>Server: set_manufacturer_data (optional)
     App->>Server: start_advertising()
     Note over Server: Server is advertising — peers can connect
     App->>Char: set_value + notify
@@ -177,6 +180,6 @@ under `products/go/tests/ble-integration/`.
 
 ## Notes
 
-The HAL exposes only the most common advertising payload fields — local
-name and one or more service UUIDs. Both must be set after `init()` and
-before `start_advertising()`.
+The HAL exposes the most common advertising payload fields — local name,
+one or more service UUIDs, and optional manufacturer-specific data. All
+must be set after `init()` and before `start_advertising()`.

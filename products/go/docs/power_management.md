@@ -4,11 +4,17 @@ Product-specific power management for AirGradient Go. Handles BMS status
 polling, battery monitoring, sleep cycle management, RTC state persistence,
 and shutdown. Called synchronously by the orchestrator — no independent task.
 
-For AGo, the power service also keeps the BQ25629 PMID rail in the correct
-mode for the SPS30 supply:
+For AGo, the power service also manages:
 
-- external input present → PMID pass-through
-- no external input / OTG active → PMID 5V boost
+- **Demand-coupled PMID:** PMID boost enable tracks PM-sensor demand
+  (`set_pm_power`), not USB plug state. When PM is off, `EN_OTG=0` saves
+  ~220 µA quiescent current from VBAT
+- **EDV (over-discharge) trip:** fires ship mode when cell voltage stays
+  below 2.9 V for 3 consecutive polls while on battery
+- **OT (over-temperature) trip:** two-tier policy — charge cutoff at 50 °C
+  with 47 °C hysteresis resume, ship mode at 60 °C
+- **BMS watchdog wrapper:** `set_watchdog_timeout_ms()` forwards to the
+  HAL without adding policy
 
 ## Files
 
@@ -21,7 +27,8 @@ mode for the SPS30 supply:
 
 | Dependency | Component | Usage |
 |---|---|---|
-| `BmsDevice` | `airgradient-bms` (HAL) | BMS telemetry, status, battery %, watchdog reset |
+| `BmsDevice` | `airgradient-bms` (HAL) | BMS telemetry, status, battery %, watchdog reset, PMID, charging, ship mode |
+| `FuelGaugeDevice` | `airgradient-bms` (HAL) | Optional fuel gauge runtime polling (V1 only). Attached via `set_fuel_gauge()` |
 | `gpio::Hal` | `airgradient-gpio` | Configure GPIO wake sources for deep sleep |
 | `go_types.h` | product | `RtcAppState`, `WakeCause`, `LockState` |
 | `go_settings.h` | product | `GoSettings` for interval-based sleep decisions |
@@ -36,11 +43,34 @@ fields default to invalid sentinels (`BmsInvalid::VOLT` / `-1.0f` / `false`).
 |---|---|---|---|
 | `battery_voltage` | `float` | `-1.0f` | Battery voltage (V) from ADC |
 | `charging_voltage` | `float` | `-1.0f` | Charging/bus voltage (V) from ADC |
-| `battery_percentage` | `float` | `-1.0f` | Estimated SOC (0--100%) from `get_battery_percentage()` |
+| `battery_percentage` | `float` | `-1.0f` | Canonical SOC (0--100%). Source depends on `battery_percent_source` |
 | `charging_status` | `BmsChargingState` | `Unknown` | Enumerated charging state |
 | `critical` | `bool` | `false` | Set when `battery_percentage` is valid and below `BATTERY_CRITICAL_PERCENT` (5 %) |
 | `charger_status` | `BmsStatus` | all defaults | Full charger status: power source, regulation flags, fault flags |
-| `telemetry` | `BmsTelemetry` | all invalid | Full ADC telemetry: currents, system/PMID voltages, thermistor, die temperature |
+| `telemetry` | `BmsTelemetry` | all invalid | Full ADC telemetry: currents, system/PMID voltages, thermistor, die and battery temperature |
+| `battery_percent_source` | `BatteryPercentSource` | `Unknown` | Where `battery_percentage` came from: `FuelGauge` or `BatteryCharger` |
+| `fg_soc_percent` | `uint8_t` | `255` | FG SOC (0--100%). V1 with FG attached only |
+| `fg_voltage_mv` | `uint16_t` | `UINT16_MAX` | FG battery terminal voltage (mV) |
+| `fg_current_ma` | `int16_t` | `INT16_MIN` | FG average current (signed mA) |
+| `fg_power_mw` | `int16_t` | `INT16_MIN` | FG average power (signed mW) |
+| `fg_remaining_capacity_mah` | `uint16_t` | `UINT16_MAX` | FG remaining capacity (mAh) |
+| `fg_full_charge_capacity_mah` | `uint16_t` | `UINT16_MAX` | FG full charge capacity (mAh) |
+| `fg_internal_temperature_c` | `float` | `-273.16` | FG die temperature (C) |
+| `fg_flags` | `uint16_t` | `0` | FG flags register |
+
+### SOC Source Preference
+
+`poll_bms()` prefers the fuel gauge SOC when available:
+
+1. If an FG is attached (`_fg != nullptr && _fg->ready()`) and
+   `read_soc_percent()` succeeds: `battery_percentage` comes from the FG,
+   `battery_percent_source = FuelGauge`
+2. Otherwise: `battery_percentage` comes from `_bms.get_battery_percentage()`
+   (BQ25629 voltage-curve estimate), `battery_percent_source = BatteryCharger`
+
+FG telemetry fields are read independently. A partial FG read failure blanks
+only the failed field; the remaining FG fields populate normally. The log
+line includes a `src=FG|BMS` marker for field diagnostics.
 
 ## Critical Battery Threshold
 
@@ -192,12 +222,21 @@ host):
 return pin_pm_power >= 0 && measure_interval_ms >= pm_sleep_threshold_ms;
 ```
 
-`set_pm_power(on)` controls the PM power GPIO directly.  No-op when
-`pin_pm_power < 0`:
+`set_pm_power(on)` controls the PM power GPIO and couples PMID boost
+enable to PM-sensor demand.  No-op when `pin_pm_power < 0`.  The GPIO
+level is determined by `pm_power_on_level` in the config (Prototype:
+active-high level 1; V1: active-low level 0):
 
-```cpp
-_gpio.set_level(pin_pm_power, on ? 1 : 0);
-```
+- `set_pm_power(true)` — calls `set_pmid_enabled(true)` (arms boost),
+  waits `PM_PMID_SETTLE_MS` (50 ms), then drives the GPIO to the
+  variant-appropriate on-level (`pm_power_on_level`)
+- `set_pm_power(false)` — drives the GPIO to the off-level (inverted
+  `pm_power_on_level`), then calls `set_pmid_enabled(false)` (disarms
+  boost, saves ~220 µA on battery)
+
+When VBUS is present, the chip masks `EN_OTG` internally — PMID comes
+from the buck regardless. The behavioral change is on battery with PM
+off: PMID collapses and the quiescent draw goes away.
 
 ## Wake Cause Mapping
 
@@ -399,10 +438,12 @@ Pulse points:
 | `decide_sleep()` | Yes | Pure logic |
 | `should_hold_pm_sensor()` | Yes | Pure logic |
 | `should_sleep_pm_sensor()` | Yes | Pure logic |
-| `set_pm_power()` | Yes (mock gpio::Hal) | GPIO level via HAL |
+| `set_pm_power()` | Yes (mock gpio::Hal + BmsDevice) | PMID arm + GPIO level |
+| `set_fuel_gauge()` | Yes (mock FuelGaugeDevice) | Non-owning pointer setter |
 | `is_fast_path_wake()` | Yes | Pure logic |
-| `poll_bms()` | Yes (mock BmsDevice) | I2C reads via driver |
-| `poll_status()` | Yes (mock BmsDevice) | Fast status poll + PMID mode sync |
+| `poll_bms()` | Yes (mock BmsDevice + FuelGaugeDevice) | I2C reads via driver; FG reads when attached |
+| `poll_status()` | Yes (mock BmsDevice) | Fast status poll |
+| `set_watchdog_timeout_ms()` | Yes (mock BmsDevice) | Forward to BmsDevice |
 | `reset_watchdog()` | Yes (mock BmsDevice) | |
 | `save_state()` / `load_state()` | Yes | `RTC_DATA_ATTR` defined away |
 | `enter_sleep()` | No | Calls `esp_sleep_*` + `gpio_hold_en()` |

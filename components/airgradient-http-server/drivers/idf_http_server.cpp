@@ -7,6 +7,7 @@
 
 #include "idf_http_server.h"
 
+#include <algorithm>
 #include <cstddef>
 
 #include <esp_err.h>
@@ -51,6 +52,20 @@ HttpMethod from_httpd_method(int m) {
   }
 }
 
+const char *method_str(HttpMethod m) {
+  switch (m) {
+  case HttpMethod::Get:
+    return "GET";
+  case HttpMethod::Post:
+    return "POST";
+  case HttpMethod::Put:
+    return "PUT";
+  case HttpMethod::Delete:
+    return "DELETE";
+  }
+  return "GET";
+}
+
 const char *status_phrase(HttpStatus s) {
   switch (s) {
   case HttpStatus::Ok:
@@ -59,6 +74,8 @@ const char *status_phrase(HttpStatus s) {
     return "201 Created";
   case HttpStatus::NoContent:
     return "204 No Content";
+  case HttpStatus::Found:
+    return "302 Found";
   case HttpStatus::BadRequest:
     return "400 Bad Request";
   case HttpStatus::NotFound:
@@ -78,15 +95,26 @@ IdfHttpServer::IdfHttpServer() = default;
 IdfHttpServer::~IdfHttpServer() { stop(); }
 
 bool IdfHttpServer::register_route(HttpMethod method, const char *path, HttpHandler handler) {
-  if (_started) {
-    ESP_LOGE(TAG, "register_route() called after start()");
-    return false;
-  }
   if (path == nullptr || handler == nullptr) {
     return false;
   }
   _routes.emplace_back(
       std::make_unique<Route>(Route{method, std::string(path), std::move(handler)}));
+
+  if (_started) {
+    Route *route = _routes.back().get();
+    httpd_uri_t uri = {};
+    uri.uri = route->path.c_str();
+    uri.method = to_httpd_method(route->method);
+    uri.handler = &IdfHttpServer::_trampoline;
+    uri.user_ctx = route;
+    if (httpd_register_uri_handler(_handle, &uri) != ESP_OK) {
+      ESP_LOGE(TAG, "failed to register route %s %s on running server", method_str(method), path);
+      _routes.pop_back();
+      return false;
+    }
+  }
+  ESP_LOGI(TAG, "route registered: %s %s", method_str(method), path);
   return true;
 }
 
@@ -98,6 +126,7 @@ bool IdfHttpServer::start(uint16_t port) {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.server_port = port;
   cfg.max_open_sockets = CONFIG_AG_HTTP_MAX_CONNECTIONS;
+  cfg.max_uri_handlers = CONFIG_AG_HTTP_MAX_ROUTES;
   // Default uri matcher is exact match — keep that behaviour.
 
   if (httpd_start(&_handle, &cfg) != ESP_OK) {
@@ -121,6 +150,7 @@ bool IdfHttpServer::start(uint16_t port) {
   }
 
   _started = true;
+  ESP_LOGI(TAG, "server started on port %u", static_cast<unsigned>(port));
   return true;
 }
 
@@ -133,6 +163,42 @@ void IdfHttpServer::stop() {
     _handle = nullptr;
   }
   _started = false;
+  ESP_LOGI(TAG, "server stopped");
+}
+
+bool IdfHttpServer::unregister_route(HttpMethod method, const char *path) {
+  if (path == nullptr) {
+    return false;
+  }
+  auto it = std::find_if(_routes.begin(), _routes.end(), [method, path](const auto &r) {
+    return r->method == method && r->path == path;
+  });
+  if (it == _routes.end()) {
+    return false;
+  }
+  if (_started) {
+    if (httpd_unregister_uri_handler(_handle, path, to_httpd_method(method)) != ESP_OK) {
+      ESP_LOGE(TAG, "failed to unregister route %s from running server", path);
+      return false;
+    }
+  }
+  ESP_LOGI(TAG, "route unregistered: %s %s", method_str(method), path);
+  _routes.erase(it);
+  return true;
+}
+
+void IdfHttpServer::unregister_all() {
+  if (_started) {
+    for (const auto &route : _routes) {
+      if (httpd_unregister_uri_handler(_handle, route->path.c_str(),
+                                       to_httpd_method(route->method)) != ESP_OK) {
+        ESP_LOGW(TAG, "failed to unregister route %s during unregister_all", route->path.c_str());
+      }
+    }
+  }
+  const size_t count = _routes.size();
+  _routes.clear();
+  ESP_LOGI(TAG, "all routes unregistered (%u removed)", static_cast<unsigned>(count));
 }
 
 esp_err_t IdfHttpServer::_trampoline(httpd_req_t *req) {

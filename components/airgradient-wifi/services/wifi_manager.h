@@ -75,11 +75,19 @@ public:
   /// Start a STA connection. Non-blocking. Requires Sta or ApSta mode
   /// (returns InvalidState otherwise).
   ///
-  /// Retry parameters in config control auto-reconnect behavior:
   /// max_retry_count = 0 disables auto-retry.
+  ///
+  /// Empty config.ssid => use NVS-saved credentials; returns NotFound
+  /// (no driver call) when the HAL reports none. Retry / backoff
+  /// fields still apply since they are manager-owned policy.
   ///
   /// Outcome delivered via on_connected / on_got_ip / on_disconnected.
   WifiStatus connect(const WifiStaConfig &config);
+
+  /// True when the HAL has STA credentials persisted in NVS. Lets
+  /// callers pick between saved-creds and fallback paths without
+  /// attempting a connect.
+  bool has_saved_credentials() const;
 
   /// Disconnect from the current AP and cancel any pending retry.
   WifiStatus disconnect();

@@ -5,6 +5,7 @@
 
 #include "measures_types.h"
 #include "rtos.h"
+#include "services/provisioning_qr.h"
 
 // ---------------------------------------------------------------------------
 // Host-compatible types (no ESP-IDF dependency)
@@ -130,6 +131,43 @@ struct DisplayValues {
 
   // --- BLE pairing ---
   uint32_t ble_passkey = 0; ///< 6-digit passkey for PairingPasskey screen
+
+  // --- Stationary networking (Provisioning screen only — Home conveys
+  // network state purely through the status-bar Wi-Fi icon per spec) ---
+  const char *provisioning_status = nullptr; ///< Transport-specific instructions
+  uint8_t provisioning_transport = 0;        ///< ProvisioningTransport value
+
+  /// Connected-state IP for the Provisioning success message.  Network
+  /// byte order (low byte = first octet) to match WifiGotIpCallback /
+  /// WifiStaticIpConfig / format_ipv4_be.  Non-zero overrides the
+  /// status-line text with "Connected! a.b.c.d".
+  uint32_t provisioning_connected_ip = 0;
+
+  /// 0 = switch transport, 1 = cancel setup (drives ProvisioningConfirm question).
+  uint8_t provisioning_confirm_kind = 0;
+
+  /// 0 = No (default), 1 = Yes (drives ProvisioningConfirm button highlight).
+  uint8_t provisioning_confirm_index = 0;
+
+  /// WifiOnly captive-portal AP SSID for Provisioning instruction L1.
+  /// Borrowed pointer (UIManager owns).  Null -> placeholder.
+  const char *provisioning_ap_ssid = nullptr;
+
+  /// WifiOnly captive-portal AP password for Provisioning instruction L2.
+  /// Borrowed pointer.  Null -> placeholder.
+  const char *provisioning_ap_password = nullptr;
+
+  /// QR matrix shown on the Provisioning page.  Borrowed pointer
+  /// (UIManager re-encodes on session entry / transport switch).  Null
+  /// or empty matrix skips the QR area.
+  const AirgradientProvisioning::QrCode *provisioning_qr = nullptr;
+
+  // --- Info screen (generic single-text page) ---
+  /// Active source string for Screen::Info.  Plain ASCII.  Newlines are
+  /// honored as hard breaks; longer runs auto-wrap.  Pointer must remain
+  /// valid through the next DisplayValues snapshot.  Null/empty renders a
+  /// blank canvas.
+  const char *info_text = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -226,6 +264,17 @@ public:
   /// Renders and drives SPI inline (blocking). Does not use worker task.
   void update_sync(const DisplayValues &values);
 
+  /// Wait until the most-recently-queued frame has finished painting.
+  /// Returns immediately when the worker is idle.  Cheap polling loop
+  /// using RTOS::delay_ms(1), mirroring the existing clear()/stop()
+  /// busy-wait pattern.
+  ///
+  /// Must NOT be called from the display worker task itself
+  /// (self-deadlocks because _worker_busy clears only when the worker
+  /// returns to its loop).  Safe from any other task, including the
+  /// orchestrator task — the only caller in this product.
+  void flush();
+
   /// Clear display to white (full refresh). Blocking.
   void clear();
 
@@ -241,7 +290,11 @@ private:
   static constexpr int BUF_SIZE = BUF_ROW_BYTES * BUF_TILE_HEIGHT * 8; // 4096
   static constexpr int BODY_Y = 18;
   static constexpr int BODY_H = 232;
-  static constexpr int REGION_SIZE = BUF_ROW_BYTES * BODY_H; // 3712
+  // Sized to the full canvas (128x250) so session screens can run a
+  // whole-screen partial refresh and avoid title-region ghosting.  Non-
+  // session screens still copy only the body slice (BODY_H rows).
+  static constexpr int FULL_H = 250;
+  static constexpr int REGION_SIZE = BUF_ROW_BYTES * FULL_H; // 4000
 
   Config _config;
 
@@ -280,6 +333,9 @@ private:
   void _draw_blearn_phase(const char *line1, const char *line2);
   void _draw_pairing_passkey(const DisplayValues &v);
   void _draw_chart(const DisplayValues &v);
+  void _draw_info(const DisplayValues &v);
+  void _draw_provisioning(const DisplayValues &v);
+  void _draw_provisioning_confirm(const DisplayValues &v);
 
   // Worker
   static void _worker_entry(void *arg);
@@ -320,6 +376,7 @@ public:
   }
 
   void update_sync(const DisplayValues &) {}
+  void flush() { ++spy_flush_count; }
   void clear() {}
   void deep_sleep() { spy_deep_sleep_called = true; }
   void stop() {}
@@ -327,6 +384,7 @@ public:
   // Test spies — reset via test_spy::reset() in stubs.
   inline static bool spy_deep_sleep_called = false;
   inline static uint32_t spy_update_count = 0;
+  inline static uint32_t spy_flush_count = 0;
 };
 
 // Stub implementations for host builds.

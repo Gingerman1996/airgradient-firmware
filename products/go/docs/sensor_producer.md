@@ -34,13 +34,18 @@ The wiring layer (`go_hardware_board.cpp`) populates a `Sensors` struct and pass
 
 | `Sensors` field | Driver | Notes |
 |---|---|---|
-| `temp_hum` | `SHT40` | Dedicated temperature + humidity sensor |
-| `co2` | `S8` or `Sunlight` | CO2 sensor (model confirmed at board bring-up) |
-| `pms_a` | `PMS5003` | Single particulate matter sensor |
+| `temp_hum` | `SHT40` | Dedicated temperature + humidity sensor, V1 only |
+| `co2` | `S12`, `SCD4x`, or `STCC4` | Probed in order at boot; first detected wins |
+| `pms_a` | `SPS30` | Single particulate matter sensor |
 | `pms_b` | `nullptr` | No second PM sensor on AGo |
 | `tvoc_nox` | `SGP41` | TVOC + NOx sensor |
 | `pressure` | `DPS368` | Barometric pressure + altitude sensor |
 | `o3_no2` | `nullptr` | No AlphaSense electrodes on AGo |
+
+`temp_hum_a` uses the product fallback order `DEDICATED` → `CO2` →
+`PRESSURE`. On V1, SHT40 is probed only after board-variant detection. If
+SHT40 is unavailable, SCD4x/STCC4 CO2-integrated T/RH can supply temperature
+and humidity; S12 cannot. DPS368 is the final temperature-only fallback.
 
 Battery management is handled separately by `PowerService` via the
 `airgradient-bms` component and is not part of the `Sensors` struct.
@@ -100,10 +105,10 @@ storage, display, and BLE services as appropriate.
 
 ## Iteration Count and Sensor Groups
 
-On AGo, the orchestrator always requests 1 iteration. AGo sensors (SPS30,
-STCC4, SGP41, DPS368) perform internal averaging, so multi-iteration
-firmware averaging adds no meaningful data quality. The per-iteration 2 s
-delay is skipped when `iterations == 1`.
+On AGo, the orchestrator always requests 1 iteration. The product relies on
+each driver's normal single-cycle measurement mode, so multi-iteration firmware
+averaging adds no meaningful data quality. The per-iteration 2 s delay is
+skipped when `iterations == 1`.
 
 The `SensorGroup` parameter controls which sensor categories are polled:
 
@@ -226,7 +231,7 @@ After `stop()` returns, `_task_handle` is `nullptr`.  A subsequent call to
 The wiring layer must follow this sequence:
 
 1. Initialise I2C/UART buses.
-2. Construct concrete driver instances (`SHT40`, `S8`/`Sunlight`, `PMS5003`, `SGP41`).
+2. Construct concrete driver instances (`SHT40` on V1, CO2, SPS30, SGP41).
 3. Call `driver.init()` on each.
 4. Populate a `Sensors` struct (unused pointers set to `nullptr`).
 5. Construct `SensorManager(sensors)`.

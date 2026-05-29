@@ -9,6 +9,7 @@
 
 #include "rtos.h"
 
+#include <cstdio>
 #include <cstdlib>
 
 #ifndef TEST_HOST
@@ -90,4 +91,11 @@ void reboot() {
 #ifndef TEST_HOST
   esp_restart();
 #endif
+}
+
+void format_ipv4_be(uint32_t ip_be, char out[16]) {
+  std::snprintf(out, 16, "%u.%u.%u.%u", static_cast<unsigned>(ip_be & 0xFF),
+                static_cast<unsigned>((ip_be >> 8) & 0xFF),
+                static_cast<unsigned>((ip_be >> 16) & 0xFF),
+                static_cast<unsigned>((ip_be >> 24) & 0xFF));
 }

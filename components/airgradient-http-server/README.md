@@ -15,7 +15,8 @@ product so far, so the default `httpd_config_t` tuning may still change.
 This component owns:
 
 - HTTP server lifecycle (start on a configurable port, stop)
-- route registration (HTTP method + exact path + handler callback)
+- route registration and unregistration (HTTP method + exact path +
+  handler callback), supported both before and after server start
 - request abstraction (method, URI, headers, query parameters, body)
 - response abstraction (status, headers, body with owning and borrowing
   modes)
@@ -79,7 +80,9 @@ caller -> HttpServer& -> IdfHttpServer -> esp_http_server -> TCP stack
 ```
 
 Product code creates an `IdfHttpServer`, registers routes through the
-abstract `HttpServer &` interface, and starts listening. Each handler
+abstract `HttpServer &` interface, and starts listening. Routes may be
+registered or unregistered at any time — before or after start. Each
+handler
 receives a `const HttpRequest &` (abstract, backed by `httpd_req_t *` at
 runtime) and an `HttpResponse &` (concrete value type). After the handler
 returns the driver reads the populated response and sends it. ESP-IDF
@@ -105,16 +108,20 @@ mode stores a raw pointer and skips the copy.
 
 | Method | Returns | Purpose |
 |---|---|---|
-| `register_route(method, path, handler)` | `bool` | Register an exact `method`+`path` handler; must be called before `start()` |
+| `register_route(method, path, handler)` | `bool` | Register an exact `method`+`path` handler; works before or after `start()` |
+| `unregister_route(method, path)` | `bool` | Remove a previously registered handler by `method`+`path` |
+| `unregister_all()` | `void` | Remove all registered routes |
 | `register_static(uri, data_start, data_end, content_type)` | `bool` | Convenience GET handler for flash-embedded assets |
 | `start(port)` | `bool` | Bind and start listening |
-| `stop()` | `void` | Stop the server; blocks until worker tasks join |
+| `stop()` | `void` | Stop the server; does not clear routes |
 
 See [`hal/http_server.h`](hal/http_server.h),
 [`hal/http_request.h`](hal/http_request.h), and
 [`hal/http_response.h`](hal/http_response.h) for the full interfaces.
 
 ## Usage
+
+### Basic
 
 ```cpp
 IdfHttpServer server;
@@ -123,6 +130,36 @@ server.register_route(HttpMethod::Post, "/api/config", handle_config);
 server.register_static("/", index_html_start, index_html_end, "text/html");
 server.start(CONFIG_AG_HTTP_PORT);
 ```
+
+### Dynamic route swap
+
+Routes can be registered and unregistered on a running server:
+
+```cpp
+// Phase 1 — provisioning routes
+server.start(CONFIG_AG_HTTP_PORT);
+server.register_route(HttpMethod::Post, "/api/provision", handle_provision);
+
+// Phase 2 — swap to measurement routes
+server.unregister_all();
+server.register_route(HttpMethod::Get, "/api/measures", handle_measures);
+```
+
+### Full teardown and restart
+
+Call `unregister_all()` after `stop()` for a clean slate before the
+next `start()` cycle:
+
+```cpp
+server.stop();
+server.unregister_all();
+
+// Re-configure with different routes
+server.register_route(HttpMethod::Get, "/api/status", handle_status);
+server.start(CONFIG_AG_HTTP_PORT);
+```
+
+### Handler example
 
 A handler is any function matching `HttpHandler`:
 
@@ -151,6 +188,7 @@ Configurable through Kconfig under **AirGradient HTTP Server**:
 | `CONFIG_AG_HTTP_PORT` | `80` | Default listen port |
 | `CONFIG_AG_HTTP_MAX_CONNECTIONS` | `4` | Maximum concurrent connections |
 | `CONFIG_AG_HTTP_MAX_BODY_SIZE` | `4096` | Maximum request body size in bytes; oversized bodies are truncated with a warning log |
+| `CONFIG_AG_HTTP_MAX_ROUTES` | `24` | Maximum number of registered URI handlers (passed to `esp_http_server` as `max_uri_handlers`); default sized for the provisioning captive portal |
 
 `httpd_config_t` is otherwise left at `HTTPD_DEFAULT_CONFIG()`. Backlog
 queue length, task stack size, etc., can be promoted to Kconfig if a

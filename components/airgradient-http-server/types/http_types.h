@@ -22,6 +22,7 @@ enum class HttpStatus : uint16_t {
   Ok = 200,
   Created = 201,
   NoContent = 204,
+  Found = 302,
   BadRequest = 400,
   NotFound = 404,
   MethodNotAllowed = 405,

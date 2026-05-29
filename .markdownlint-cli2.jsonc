@@ -20,6 +20,10 @@
     // Vendor driver pending replacement (see docs/STYLE.md scope decision)
     "components/bq25629/**",
 
+    // Vendored libraries inside airgradient-client (copied as-is from old
+    // library; upstream-owned, out of scope)
+    "components/airgradient-client/lib/**",
+
     // Build artifacts and caches
     "**/build/**",
     "**/managed_components/**",

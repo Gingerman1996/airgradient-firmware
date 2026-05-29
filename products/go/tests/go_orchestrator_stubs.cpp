@@ -21,6 +21,8 @@
 #include "go_sensor_producer.h"
 #include "go_storage.h"
 #include "go_ulp.h"
+#include "services/ag_client.h"
+#include "go_wifi.h"
 
 #include <algorithm>
 #include <cstring>
@@ -104,8 +106,38 @@ bool ble_decode_updates_settings = false;
 GoSettings ble_decoded_settings{};
 BleHistoryDecodeResult ble_history_decode_result{};
 
+// --- CloudService ---
+uint32_t cloud_start_count = 0;
+bool cloud_start_result = true;
+uint32_t cloud_stop_count = 0;
+uint32_t cloud_arm_count = 0;
+bool cloud_last_arm_fire_now = false;
+uint32_t cloud_disarm_count = 0;
+uint32_t cloud_set_disable_count = 0;
+bool cloud_last_disable_cloud = false;
+uint32_t cloud_snapshot_count = 0;
+MeasuresAGo cloud_last_snapshot{};
+
+// --- WifiService ---
+bool wifi_has_saved_credentials = false;
+bool wifi_connect_saved_called = false;
+WifiStaticIpConfig wifi_last_static_ip{};
+bool wifi_static_ip_was_null = false;
+bool wifi_try_fallback_called = false;
+bool wifi_shutdown_called = false;
+bool wifi_clear_credentials_called = false;
+bool wifi_start_provisioning_called = false;
+ProvisioningTransport wifi_start_provisioning_transport = ProvisioningTransport::BleOnly;
+bool wifi_switch_transport_called = false;
+bool wifi_stop_provisioning_called = false;
+bool wifi_tick_called = false;
+uint32_t wifi_next_deadline_ms = 0;
+bool wifi_is_online = false;
+bool wifi_has_been_online = false;
+
 // --- PowerService ---
 bool bms_polled = false;
+uint32_t bms_poll_count = 0;
 bool shutdown_called = false;
 bool state_saved = false;
 RtcAppState last_saved_state{};
@@ -114,6 +146,7 @@ PowerSnapshot snapshot_to_return{}; // tests set this before poll_bms
 PowerService::SleepType sleep_type_to_return = PowerService::SleepType::None;
 bool pm_power_set = false;
 bool pm_power_on = false;
+uint32_t pm_power_set_count = 0;
 
 // --- BuzzerService ---
 bool buzzer_played = false;
@@ -187,7 +220,35 @@ void reset() {
   ble_decoded_settings = GoSettings{};
   ble_history_decode_result = BleHistoryDecodeResult{};
 
+  cloud_start_count = 0;
+  cloud_start_result = true;
+  cloud_stop_count = 0;
+  cloud_arm_count = 0;
+  cloud_last_arm_fire_now = false;
+  cloud_disarm_count = 0;
+  cloud_set_disable_count = 0;
+  cloud_last_disable_cloud = false;
+  cloud_snapshot_count = 0;
+  cloud_last_snapshot = MeasuresAGo{};
+
+  wifi_has_saved_credentials = false;
+  wifi_connect_saved_called = false;
+  wifi_last_static_ip = WifiStaticIpConfig{};
+  wifi_static_ip_was_null = false;
+  wifi_try_fallback_called = false;
+  wifi_shutdown_called = false;
+  wifi_clear_credentials_called = false;
+  wifi_start_provisioning_called = false;
+  wifi_start_provisioning_transport = ProvisioningTransport::BleOnly;
+  wifi_switch_transport_called = false;
+  wifi_stop_provisioning_called = false;
+  wifi_tick_called = false;
+  wifi_next_deadline_ms = 0;
+  wifi_is_online = false;
+  wifi_has_been_online = false;
+
   bms_polled = false;
+  bms_poll_count = 0;
   shutdown_called = false;
   state_saved = false;
   last_saved_state = RtcAppState{};
@@ -196,6 +257,7 @@ void reset() {
   sleep_type_to_return = PowerService::SleepType::None;
   pm_power_set = false;
   pm_power_on = false;
+  pm_power_set_count = 0;
 
   buzzer_played = false;
   buzzer_last_note_count = 0;
@@ -207,6 +269,7 @@ void reset() {
 
   DisplayService::spy_deep_sleep_called = false;
   DisplayService::spy_update_count = 0;
+  DisplayService::spy_flush_count = 0;
 }
 
 } // namespace test_spy
@@ -428,8 +491,11 @@ bool StorageService::clear_routes() {
 PowerService::PowerService(BmsDevice &bms, const gpio::Hal &gpio, const Config &config)
     : _bms(bms), _gpio(gpio), _config(config) {}
 
+void PowerService::set_fuel_gauge(FuelGaugeDevice * /*fg*/) {}
+
 PowerSnapshot PowerService::poll_bms() {
   test_spy::bms_polled = true;
+  ++test_spy::bms_poll_count;
   return test_spy::snapshot_to_return;
 }
 
@@ -492,6 +558,7 @@ bool PowerService::should_sleep_pm_sensor(uint32_t measure_interval_ms) const {
 void PowerService::set_pm_power(bool on) {
   test_spy::pm_power_set = true;
   test_spy::pm_power_on = on;
+  ++test_spy::pm_power_set_count;
 }
 
 void PowerService::enter_sleep(uint32_t /*sleep_duration_ms*/) {}
@@ -554,8 +621,9 @@ int InputService::pin_for_button_index(int /*idx*/) const { return -1; }
 // BleService stubs
 // ============================================================================
 
-BleService::BleService(RtosQueueHandle /*event_queue*/, StorageService &storage)
-    : _event_queue(nullptr), _storage(storage) {}
+BleService::BleService(RtosQueueHandle /*event_queue*/, StorageService &storage,
+                       AgBleServer & /*ble_server*/)
+    : _event_queue(nullptr), _storage(storage), _server(nullptr) {}
 
 bool BleService::init(const char * /*serial*/) {
   test_spy::ble_init_called = true;
@@ -692,3 +760,138 @@ uint16_t StorageService::read_route_points(uint32_t /*id*/, uint32_t /*off*/, Ro
 time_t StorageService::get_session_start_time(uint32_t /*id*/) const { return 0; }
 uint32_t StorageService::total_capacity_kb() const { return 0; }
 uint32_t StorageService::used_kb() const { return 0; }
+
+// ============================================================================
+// WifiService stubs
+// ============================================================================
+
+WifiService::WifiService(RtosQueueHandle event_queue, const Deps &deps, const Config &cfg)
+    : _event_queue(event_queue), _wifi(deps.wifi), _ble(deps.ble), _http(deps.http), _cfg(cfg) {}
+
+WifiService::~WifiService() = default;
+
+bool WifiService::has_saved_credentials() const { return test_spy::wifi_has_saved_credentials; }
+
+void WifiService::connect_with_saved_credentials(const WifiStaticIpConfig *static_ip) {
+  test_spy::wifi_connect_saved_called = true;
+  if (static_ip != nullptr) {
+    test_spy::wifi_last_static_ip = *static_ip;
+    test_spy::wifi_static_ip_was_null = false;
+  } else {
+    test_spy::wifi_last_static_ip = WifiStaticIpConfig{};
+    test_spy::wifi_static_ip_was_null = true;
+  }
+}
+
+void WifiService::try_default_fallback_credentials() { test_spy::wifi_try_fallback_called = true; }
+
+void WifiService::start_provisioning(ProvisioningTransport t) {
+  test_spy::wifi_start_provisioning_called = true;
+  test_spy::wifi_start_provisioning_transport = t;
+}
+
+void WifiService::switch_provisioning_transport() { test_spy::wifi_switch_transport_called = true; }
+
+void WifiService::stop_provisioning() { test_spy::wifi_stop_provisioning_called = true; }
+
+void WifiService::shutdown() { test_spy::wifi_shutdown_called = true; }
+
+void WifiService::clear_credentials() { test_spy::wifi_clear_credentials_called = true; }
+
+bool WifiService::is_online() const { return test_spy::wifi_is_online; }
+bool WifiService::is_connecting() const { return false; }
+bool WifiService::is_provisioning() const { return false; }
+ProvisioningTransport WifiService::current_transport() const {
+  return ProvisioningTransport::BleOnly;
+}
+uint32_t WifiService::ip() const { return 0; }
+int WifiService::rssi() const { return WIFI_RSSI_INVALID; }
+WifiDisconnectReason WifiService::last_disconnect_reason() const {
+  return WifiDisconnectReason::unknown;
+}
+bool WifiService::has_been_online() const { return test_spy::wifi_has_been_online; }
+uint32_t WifiService::next_deadline_ms() const { return test_spy::wifi_next_deadline_ms; }
+void WifiService::tick(uint32_t /*now_ms*/) { test_spy::wifi_tick_called = true; }
+
+// Private — never called via orchestrator stubs
+void WifiService::_install_wifi_callbacks() {}
+void WifiService::_detach_wifi_callbacks() {}
+void WifiService::_on_got_ip(uint32_t /*ip*/) {}
+void WifiService::_on_disconnected(WifiDisconnectReason /*r*/) {}
+void WifiService::_reset_deadline() {}
+void WifiService::_arm_deadline(uint32_t /*window_ms*/) {}
+void WifiService::_reset_online_latches() {}
+void WifiService::_post_wifi_disconnected(WifiDisconnectReason /*r*/) {}
+
+// ============================================================================
+// AgClient stubs (concrete class — no virtuals; link-time replacement)
+// ============================================================================
+
+bool AgClient::begin(const char * /*serial_number*/, NetworkType /*network*/,
+                     CellularModem * /*modem*/) {
+  return true;
+}
+
+AgClientResult AgClient::http_fetch_config(char * /*config_out*/, size_t /*config_size*/,
+                                           size_t *bytes_written) {
+  if (bytes_written != nullptr) {
+    *bytes_written = 0;
+  }
+  return AgClientResult::Ok;
+}
+
+AgClientResult AgClient::http_post_measures(const Measures & /*measures*/, int /*signal*/) {
+  return AgClientResult::Ok;
+}
+
+AgClientResult AgClient::http_post_measures(const MeasuresBasic & /*measures*/, int /*signal*/) {
+  return AgClientResult::Ok;
+}
+
+AgClientResult AgClient::http_post_measures(const MeasuresAGo & /*measures*/, int /*signal*/) {
+  return AgClientResult::Ok;
+}
+
+// ============================================================================
+// CloudService stubs — orchestrator wiring only.  The real cloud-task logic
+// is exercised in go_cloud.tests.cpp against a separate test_support library.
+// ============================================================================
+
+CloudService::CloudService(RtosQueueHandle event_queue, const Deps &deps, const Config &cfg)
+    : _event_queue(event_queue), _client(deps.client), _wifi(deps.wifi), _cfg(cfg),
+      _disable_cloud(cfg.disable_cloud) {}
+
+CloudService::~CloudService() = default;
+
+bool CloudService::start() {
+  ++test_spy::cloud_start_count;
+  return test_spy::cloud_start_result;
+}
+
+void CloudService::stop() { ++test_spy::cloud_stop_count; }
+
+void CloudService::arm(bool fire_now) {
+  ++test_spy::cloud_arm_count;
+  test_spy::cloud_last_arm_fire_now = fire_now;
+}
+
+void CloudService::disarm() { ++test_spy::cloud_disarm_count; }
+
+void CloudService::set_disable_cloud(bool disable) {
+  ++test_spy::cloud_set_disable_count;
+  test_spy::cloud_last_disable_cloud = disable;
+}
+
+void CloudService::update_measures_snapshot(const MeasuresAGo &m) {
+  ++test_spy::cloud_snapshot_count;
+  test_spy::cloud_last_snapshot = m;
+}
+
+// CloudService private methods — never reached through orchestrator stubs.
+void CloudService::_run() {}
+void CloudService::_task_entry(void * /*arg*/) {}
+uint32_t CloudService::_run_iteration(uint32_t /*now*/) { return 0; }
+void CloudService::_wake() {}
+void CloudService::_do_post(uint32_t /*now_ms*/) {}
+void CloudService::_do_fetch(uint32_t /*now_ms*/) {}
+MeasuresAGo CloudService::_snapshot_copy() { return _latest_snapshot; }

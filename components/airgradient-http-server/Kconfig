@@ -25,4 +25,14 @@ menu "AirGradient HTTP Server"
             larger than this cap will be truncated to this size before the
             handler runs.
 
+    config AG_HTTP_MAX_ROUTES
+        int "Maximum number of registered routes"
+        range 4 64
+        default 24
+        help
+            Maximum number of URI handlers the server will accept. Passed
+            to esp_http_server as max_uri_handlers. The provisioning
+            captive portal registers ~16 routes (API + OS probe URLs),
+            so the default must accommodate that with headroom.
+
 endmenu

@@ -1,0 +1,13 @@
+menu "AirGradient Client"
+
+    config AG_CLIENT_CELLULAR_SUPPORT
+        bool "Enable cellular modem support"
+        default n
+        help
+            When enabled, AgClient can use a CellularModem for CoAP and
+            MQTT operations, and the CellularHttpClient backend is built
+            for OTA use. Adds a build dependency on airgradient-cellular.
+            Note: cellular backends are not implemented in the current
+            release; enabling this flag has no effect yet.
+
+endmenu

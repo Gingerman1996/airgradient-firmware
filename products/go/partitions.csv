@@ -1,0 +1,24 @@
+# AirGradient Go — Partition Table
+#
+# Target: ESP32-C5, 4 MB SPI flash, 2 OTA slots.
+#
+# Bootloader:        0x2000 – 0x8000   (32 KB, set by CONFIG_BOOTLOADER_OFFSET_IN_FLASH)
+# Partition table:   0x8000 – 0x9000   (4 KB,  set by CONFIG_PARTITION_TABLE_OFFSET)
+# Data partitions:   0x9000 – 0x20000  (NVS + otadata + phy_init, fits in 1 64 KB block)
+# OTA slot 0:        0x20000 – 0x210000 (1.9375 MB)
+# OTA slot 1:        0x210000 – 0x400000 (1.9375 MB)
+#
+# Off-flash storage (not represented here):
+#   - Route data:    external SPI NAND (see components/airgradient-nand-storage)
+#   - Chart cache:   RTC slow memory (see components/airgradient-payload-cache)
+#
+# App slot offsets are 64 KB-aligned as required for OTA. Each slot has
+# ~100 KB headroom above the current app size (~1.78 MB) for feature
+# growth (Stationary checkpoint 3, JSON parsing, etc.).
+#
+# Name,     Type, SubType, Offset,    Size,       Flags
+nvs,        data, nvs,     0x9000,    0x6000
+otadata,    data, ota,     0xF000,    0x2000
+phy_init,   data, phy,     0x11000,   0x1000
+ota_0,      app,  ota_0,   0x20000,   0x1F0000
+ota_1,      app,  ota_1,   0x210000,  0x1F0000

@@ -999,13 +999,14 @@ esp_err_t BQ25629::configure_jeita_profile() {
 esp_err_t BQ25629::read_ntc_temperature(BQ25629_NTC_Data &data) {
   esp_err_t ret;
 
-  // Read TS ADC value (16-bit, 0.0961%/LSB)
+  // Read TS ADC value (12-bit in low bits, 0.0961%/LSB)
   uint16_t ts_adc_raw = 0;
   ret = read_register_16(BQ25629_REG::TS_ADC, ts_adc_raw);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to read TS_ADC: %s", esp_err_to_name(ret));
     return ret;
   }
+  ts_adc_raw &= 0x0FFF; // Mask to 12-bit value (consistent with read_adc)
 
   // Convert ADC to percentage (0.0961% per LSB)
   data.ts_percent = ts_adc_raw * 0.0961f;

@@ -10,7 +10,9 @@ which returns immediately; the slow EPD refresh runs in a dedicated task.
 | File | Purpose |
 |---|---|
 | `products/go/main/go_display.h` | `DisplayService` class, `DisplayValues` struct, `RtcDisplaySnapshot` struct, `Screen`/`Metric` enums, free functions |
-| `products/go/main/go_display.cpp` | Rendering pipeline, refresh logic, worker task, display driver, RTC snapshot storage |
+| `products/go/main/go_display.cpp` | Rendering pipeline, refresh logic, worker task, display driver, RTC snapshot storage, session-screen draw routines |
+| `products/go/main/go_text_wrap.h` | Pure host-testable word-wrap helper (`compute_wrapped_lines`) used by `_draw_info()` and the auto-wrapped Provisioning status line |
+| `products/go/main/go_text_wrap.cpp` | Implementation of the word-wrap helper |
 
 ## Dependencies
 
@@ -54,8 +56,9 @@ All pin assignments come from `board_config.h` via `Config` struct members.
 | Method | Blocking | Description |
 |---|---|---|
 | `init(initial, defer_refresh=false)` | Depends | Init driver + u8g2, render initial frame. See below. |
-| `update(values, wait)` | No* | Render frame, signal worker. `wait=true` blocks until worker ready |
+| `update(values, wait)` | No* | Render frame, signal worker. `wait=true` blocks until any prior worker job clears so the new frame queues without being dropped (does **not** wait for the new frame to finish painting; use `flush()` for that). |
 | `update_sync(values)` | Yes | Render + SPI inline; for fast-path boot without worker |
+| `flush()` | Yes | Spin until `_worker_busy` clears so the most-recently-queued frame is fully painted. Cheap polling with `RTOS::delay_ms(1)`, mirroring `clear()` / `stop()`. Used by every session transition that gates a fixed-duration on-screen dwell (the 500 ms STA `Connected!` hold, the 1.5 s provisioning `Connected!` hold, the `SwitchingTransport` ack, both leave-session renders). MUST NOT be called from the display worker task itself. |
 | `clear()` | Yes | Clear display to white via full refresh |
 | `deep_sleep()` | Yes | Put SSD1680 into deep sleep mode 1 (~100 µA → <1 µA) |
 | `stop()` | Yes | Stop worker task; call before ESP deep sleep |
@@ -133,6 +136,24 @@ defined outside the `#ifndef TEST_HOST` guard and compile without ESP-IDF
 headers. `DisplayService` and the snapshot free functions are
 hardware-dependent and excluded from host builds (stubs provided).
 
+### Screen Enum
+
+| Screen | Notes |
+|---|---|
+| `Home` | Dashboard |
+| `MainMenu` | Home with menu overlay |
+| `Settings` / `SettingsChoice` / `TagList` / `About` / `Confirm` | Full-screen lists |
+| `Shutdown` | Powering off |
+| `PairingPasskey` | 6-digit BLE passkey, set by orchestrator |
+| `Info` | Generic single-text presentation surface (cold-boot splash, Stationary bring-up narration); no status bar, no snackbar |
+| `Provisioning` | Stationary Wi-Fi provisioning page (QR + status + action rows); no status bar, no snackbar |
+| `ProvisioningConfirm` | Yes / No confirmation overlay for Provisioning actions; no status bar, no snackbar |
+
+The three Stationary setup screens (`Info`, `Provisioning`,
+`ProvisioningConfirm`) form one logical "setup session". They share a
+distinct refresh policy and own the full canvas (no status bar drawn).
+See [Setup Session Refresh Policy](#setup-session-refresh-policy) below.
+
 ### DisplayValues
 
 Flat snapshot of everything needed to render one frame. Built by the UI Manager
@@ -146,6 +167,15 @@ Key points:
 - `ListRow::text` is `char[48]` (owned by struct, not a pointer)
 - Invalid sentinels from `MeasuresInvalid`; `0xFF` for battery
 - `ble_passkey` (`uint32_t`): 6-digit passkey for PairingPasskey screen
+- `info_text` (`const char *`): caller-owned ASCII string for `Screen::Info`; null or empty renders a blank canvas
+- `provisioning_status` (`const char *`): transport-aware status text for `Screen::Provisioning`; auto-wrapped to at most 2 lines so long strings (`Connected! 192.168.x.y`, `Connect failed - try again`) stay inside the canvas
+- `provisioning_transport` (`uint8_t`): `ProvisioningTransport` value driving transport-specific labels and captions
+- `provisioning_connected_ip` (`uint32_t`): network-byte-order IPv4 (low byte = first octet) matching `WifiGotIpCallback`, `WifiStaticIpConfig`, and `format_ipv4_be`. Non-zero overrides the status line with the formatted `Connected!` text via `UIManager::provisioning_status_text()`
+- `provisioning_confirm_kind` (`uint8_t`): `0` switch transport, `1` cancel setup
+- `provisioning_confirm_index` (`uint8_t`): `0` No (default), `1` Yes
+- `provisioning_ap_ssid` (`const char *`): captive-portal AP SSID (`airgradient-<MAC>`) rendered as the Wi-Fi instruction line
+- `provisioning_ap_password` (`const char *`): captive-portal AP password rendered as the Wi-Fi instruction line (sourced from `UIManager::Config::ap_password`, matches `WifiService::Config::ap_password`)
+- `provisioning_qr` (`const AirgradientProvisioning::QrCode *`): borrowed pointer to the QR matrix shown on the Provisioning page. UIManager re-encodes on session entry and transport switch (BleOnly → companion-app URL, WifiOnly → `WIFI:` join descriptor). Null or empty matrix skips the QR area
 
 ## Architecture
 
@@ -219,14 +249,22 @@ enum class RefreshMode : uint8_t {
 
 The `update()` method selects the refresh mode using this priority:
 
-1. **Partial** — if this is a menu-navigation transition (either previous or
-   next screen is a menu-navigation screen, and the next screen is not
-   Shutdown or PairingPasskey)
-2. **Full** — if `_diff_count >= max_partial_ops` (anti-ghosting, default 20)
-3. **Fast** — if `_menu_exited` is set (post-menu cleanup)
-4. **Partial** — if both screens are "navigable" and header unchanged, OR same
+1. **Full** — crossing the setup-session boundary (any non-session screen
+   ↔ `Info` / `Provisioning` / `ProvisioningConfirm`). Resets
+   `_diff_count` and `_menu_exited` so the next session starts with a
+   fresh partial budget.
+2. **Partial** — in-session transition (both previous and next are
+   session screens). The partial-op counter is **not** consulted inside
+   the session. Covers `Info` text updates, Provisioning status updates,
+   `Provisioning ↔ ProvisioningConfirm`, and No ↔ Yes toggling.
+3. **Partial** — menu-navigation transition (either previous or next is
+   a menu-navigation screen, and the next screen is not Shutdown or
+   PairingPasskey)
+4. **Full** — `_diff_count >= max_partial_ops` (anti-ghosting, default 20)
+5. **Fast** — `_menu_exited` is set (post-menu cleanup)
+6. **Partial** — both screens "navigable" and header unchanged, OR same
    list screen
-5. **Fast** — everything else (fallback)
+7. **Fast** — everything else (fallback)
 
 A screen is **navigable** if the user reaches it through normal menu
 interaction: Home, MainMenu, Settings, SettingsChoice, TagList, Confirm,
@@ -288,32 +326,97 @@ Writing both RAM planes ensures that after a Fast refresh, the basemap
 
 | Condition | Refresh Mode |
 |---|---|
+| Crossing the setup-session boundary (non-session ↔ Info / Provisioning / ProvisioningConfirm) | Full |
+| In-session transition (Info ↔ Provisioning ↔ ProvisioningConfirm, including same-screen text updates) | Partial |
 | Menu-navigation transition (prev or next is menu-nav screen) | Partial |
 | Menu-navigation transition, even if `diff_count >= max_partial_ops` | Partial |
 | Menu-navigation transition with header change | Partial |
 | Transition **to** Shutdown or PairingPasskey from menu | Fast/Full (existing) |
-| `diff_count >= max_partial_ops` (non-menu) | Full |
+| `diff_count >= max_partial_ops` (non-menu, non-session) | Full |
 | Post-menu cleanup (`_menu_exited` set, non-menu update) | Fast |
-| Both navigable, header unchanged (non-menu) | Partial |
+| Both navigable, header unchanged (non-menu, non-session) | Partial |
 | Same list screen (any header state) | Partial |
 | Screen transition involving PairingPasskey (non-menu) | Fast |
 | Screen transition involving Shutdown (non-menu) | Fast |
-| Navigable screen transition, header changed (non-menu) | Fast |
+| Navigable screen transition, header changed (non-menu, non-session) | Fast |
+
+### Setup Session Refresh Policy
+
+`Screen::Info`, `Screen::Provisioning`, and `Screen::ProvisioningConfirm`
+are treated as one logical setup session. The refresh policy has two
+rules layered on top of the general matrix:
+
+- **Crossing the session boundary in either direction forces Full.**
+  Any non-session screen entering a session screen, or any session
+  screen returning to Home / Portable, runs a full GC waveform. This
+  prevents the prior layout from ghosting under the new one. The
+  partial-op counter and `_menu_exited` flag are reset at the boundary.
+- **All intra-session transitions are Partial, regardless of layout
+  change.** This includes `Info` text updates
+  (`Connecting to saved Wi-Fi...` → `Trying default Wi-Fi...` →
+  `Connected!\n<ip>`), Provisioning status updates, the
+  `Provisioning ↔ ProvisioningConfirm` overlay, the No ↔ Yes toggle in
+  the confirmation overlay, and the in-session `Info → Provisioning`
+  jump. The partial worker writes the **full canvas** (y = 0..249) for
+  session screens, so even visually-disjoint layouts (Info's centered
+  text block versus Provisioning's full-canvas QR layout) clear
+  cleanly without falling back to the Full waveform's ~3 s flash.
+
+Non-session partials still write only the body region (y = 18..249,
+232 px tall) to preserve the status bar without rewriting it. The
+selection between body-only and full-canvas partial happens in the
+worker loop based on `is_session_screen(_prev_values.screen)`.
+
+### Session-Screen Drawing
+
+Session screens skip `_draw_status_bar()` and `_draw_snackbar()`:
+
+- `_draw_info()` renders a centered word-wrapped text block in the
+  body region (y ≥ 18 clamp). Uses `compute_wrapped_lines()` with a
+  `u8g2_GetStrWidth` closure as the `StrWidthFn`, ASCII only, font
+  `u8g2_font_helvB12_tf`. Multi-line text honours explicit `\n` as
+  hard breaks and word-wraps each paragraph at the last space
+  boundary that fits.
+- `_draw_provisioning()` renders the title (`Connect to Wi-Fi`),
+  transport-specific QR code (drawn from `v.provisioning_qr` —
+  encoded by UIManager: companion-app URL for BLE, Wi-Fi `WIFI:` join
+  descriptor for the captive-portal AP), caption, instructions
+  (SSID + password from `v.provisioning_ap_ssid` /
+  `v.provisioning_ap_password` in Wi-Fi), status line (auto-wrapped to
+  at most 2 lines via the same word-wrap helper), helper text, and
+  two action rows. Labels switch on `provisioning_transport`. Module
+  pixel size and quiet zone are product-local; the QR matrix data
+  comes from `airgradient-provisioning`.
+- `_draw_provisioning_confirm()` renders the question text from
+  `v.rows[0].text` (provided by `UIManager::populate_provisioning_confirm_rows()`)
+  and two filled / framed buttons (`No` index 0, `Yes` index 1)
+  driven by `provisioning_confirm_index`.
 
 ### Display Update Suppression
 
-While the user is on a menu-navigation screen (MainMenu, Settings,
-SettingsChoice, TagList, Confirm, About), background events — sensor data,
-BLE connect/disconnect/auth/config writes, BMS charging-status changes, and
-snackbar expiry — do **not** trigger display updates. Only user-initiated
-events refresh the display on menu screens.
+Background display updates are suppressed in two cases:
 
-This policy is enforced by the orchestrator's
-`request_background_display_update()`, which delegates to
-`UIManager::is_on_menu_screen()` for the screen classification. Background
-data is still cached internally and pushed to BLE clients; only the e-paper
-refresh is suppressed to avoid unnecessary refreshes that interrupt menu
-navigation. See `docs/orchestrator.md` for the full call-site classification.
+- **Menu-navigation screens** (MainMenu, Settings, SettingsChoice,
+  TagList, Confirm, About). Background events — sensor data, BLE
+  connect/disconnect/auth/config writes, BMS charging-status changes,
+  and snackbar expiry — do not trigger display updates while the user
+  is interacting with a menu.
+- **Setup session screens** (`Info`, `Provisioning`,
+  `ProvisioningConfirm`). The orchestrator's
+  `_setup_session_active` flag short-circuits
+  `request_background_display_update()` entirely so sensor / BMS /
+  BLE-status events that arrive during the session do not race the
+  explicit `update_display(wait=true)` calls that drive session state
+  transitions.
+
+Both cases are enforced by the orchestrator's
+`request_background_display_update()`, which checks
+`_setup_session_active` first, then delegates to
+`UIManager::is_on_menu_screen()`. Background data is still cached
+internally and pushed to BLE clients; only the e-paper refresh is
+suppressed. The display catches up on the next user-initiated repaint
+or on the next deliberate session render. See `docs/orchestrator.md`
+for the full call-site classification.
 
 ## Rendering Pipeline
 
