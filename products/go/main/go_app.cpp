@@ -384,6 +384,10 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
 
   PowerService &pwr = _board.power();
 
+  // Drive EN_PM in lockstep with the PM sensor's I²C Sleep/Wake.
+  sensor_producer->set_pm_power_handler(
+      [](void *ctx, bool on) { static_cast<PowerService *>(ctx)->set_pm_power(on); }, &pwr);
+
   std::string serial = _board.serial_number();
   AG_LOGI(TAG, "Serial number: %s", serial.c_str());
 
@@ -501,6 +505,10 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
 
   DisplayService &disp = _board.display();
   PowerService &pwr = _board.power();
+
+  // Drive EN_PM in lockstep with the PM sensor's I²C Sleep/Wake.
+  sensor_producer->set_pm_power_handler(
+      [](void *ctx, bool on) { static_cast<PowerService *>(ctx)->set_pm_power(on); }, &pwr);
 
   std::string serial = _board.serial_number();
   AG_LOGI(TAG, "Serial number: %s", serial.c_str());

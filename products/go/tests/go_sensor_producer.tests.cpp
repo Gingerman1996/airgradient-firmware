@@ -124,6 +124,19 @@ private:
 #define EXPECT_READ(mock, data, status)                                                            \
   REQUIRE_CALL((mock), read(trompeloeil::_)).LR_SIDE_EFFECT(_1 = (data)).RETURN(status)
 
+// Records calls to the PM-power handler so tests can assert polarity/ordering.
+namespace {
+struct PmPowerRec {
+  bool called = false;
+  bool last_on = false;
+};
+void record_pm_power(void *ctx, bool on) {
+  auto *rec = static_cast<PmPowerRec *>(ctx);
+  rec->called = true;
+  rec->last_on = on;
+}
+} // namespace
+
 // ===========================================================================
 // Handler tests
 // ===========================================================================
@@ -198,6 +211,34 @@ TEST_CASE("SensorProducer handlers", "[SensorProducer]") {
   SECTION("handle_pm_sleep parks the PM sensor") {
     REQUIRE_CALL(mock_pm, enter_sleep()).RETURN(true);
     access.handle_pm_sleep();
+  }
+
+  SECTION("handle_pm_sleep drives EN_PM inactive after parking") {
+    REQUIRE_CALL(mock_pm, enter_sleep()).RETURN(true);
+    PmPowerRec rec;
+    producer.set_pm_power_handler(&record_pm_power, &rec);
+    access.handle_pm_sleep();
+    CHECK(rec.called);
+    CHECK_FALSE(rec.last_on); // EN_PM driven inactive once the sensor is asleep
+  }
+
+  SECTION("handle_pm_sleep leaves EN_PM untouched when the sleep command fails") {
+    REQUIRE_CALL(mock_pm, enter_sleep()).RETURN(false);
+    PmPowerRec rec;
+    producer.set_pm_power_handler(&record_pm_power, &rec);
+    access.handle_pm_sleep();
+    CHECK_FALSE(rec.called); // no GPIO change when the sleep command didn't take
+  }
+
+  SECTION("handle_prepare drives EN_PM active before warming up") {
+    REQUIRE_CALL(mock_pm, exit_sleep()).RETURN(true);
+    REQUIRE_CALL(mock_tvoc_nox, run_conditioning()).TIMES(AT_LEAST(1)).RETURN(true);
+    ALLOW_CALL(mock_pm, read(trompeloeil::_)).RETURN(false);
+    PmPowerRec rec;
+    producer.set_pm_power_handler(&record_pm_power, &rec);
+    access.handle_prepare();
+    CHECK(rec.called);
+    CHECK(rec.last_on); // EN_PM driven active before talking to the sensor
   }
 
   // -----------------------------------------------------------------------

@@ -94,6 +94,19 @@ public:
   /// request_prepare() (whose warmup wakes it before reading).
   void request_pm_sleep();
 
+  /// Install the handler the producer calls to drive PM-sensor power (the EN_PM
+  /// GPIO) in lockstep with sleep/wake: invoked with on=false after the sensor
+  /// is parked in Sleep, and on=true before it is woken + warmed.  Optional —
+  /// when unset the producer manages sleep over I²C only.
+  ///
+  /// Assumes EN_PM does NOT remove the SPS30 supply or I²C: it only gates an
+  /// external enable while the sensor holds its I²C Sleep state.  If EN_PM cut
+  /// power outright, the Sleep state and the 0x1103 wake would be lost (the
+  /// sensor would cold-boot and need a full re-init, not a wake) — that must be
+  /// ruled out on the bench.
+  using PmPowerFn = void (*)(void *ctx, bool on);
+  void set_pm_power_handler(PmPowerFn fn, void *ctx);
+
 private:
   SensorManager &_manager;
   RtosQueueHandle _event_queue;
@@ -101,6 +114,10 @@ private:
 
   volatile bool _running = false;
   RtosTaskHandle _task_handle = nullptr;
+
+  /// PM-sensor power handler (see set_pm_power_handler).  Null = not wired.
+  PmPowerFn _pm_power_fn = nullptr;
+  void *_pm_power_ctx = nullptr;
 
   /// Cached TVOC/NOx from the most recent sampler tick. Spliced into
   /// measurement results when the sampler is active so the orchestrator

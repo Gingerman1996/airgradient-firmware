@@ -23,6 +23,11 @@ SensorProducer::SensorProducer(SensorManager &manager, RtosQueueHandle event_que
                                const Config &config)
     : _manager(manager), _event_queue(event_queue), _config(config) {}
 
+void SensorProducer::set_pm_power_handler(PmPowerFn fn, void *ctx) {
+  _pm_power_fn = fn;
+  _pm_power_ctx = ctx;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -188,6 +193,11 @@ void SensorProducer::handle_calibration() {
 }
 
 void SensorProducer::handle_prepare() {
+  // Restore PM-sensor power (drive EN_PM active) before talking to the sensor —
+  // the post-sleep path may have driven it inactive.  Must precede the I²C wake.
+  if (_pm_power_fn != nullptr) {
+    _pm_power_fn(_pm_power_ctx, true);
+  }
   // Pre-wake path: SensorManager::warmup() wakes the PM sensor (pm_wake() at
   // its start) before the warmup discard reads, so prepare = wake + warmup.
   AG_LOGI(TAG, "PM prepare: waking + warming up PM sensor");
@@ -268,5 +278,10 @@ void SensorProducer::handle_pm_sleep() {
   AG_LOGI(TAG, "PM sleep: parking PM sensor");
   if (!_manager.pm_sleep()) {
     AG_LOGW(TAG, "PM sleep: pm_sleep() reported an error");
+    return; // leave EN_PM active when the sleep command didn't take
+  }
+  // Drive EN_PM inactive only once the sensor is asleep (I²C sleep first).
+  if (_pm_power_fn != nullptr) {
+    _pm_power_fn(_pm_power_ctx, false);
   }
 }
