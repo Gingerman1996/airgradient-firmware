@@ -186,6 +186,22 @@ private:
   static constexpr uint16_t LEARNING_CHARGE_CURRENT_MA = 1500;
   static constexpr uint32_t LEARNING_GPS_SLEEP_MS = 8u * 60u * 60u * 1000u;
 
+  // GPS_NOT_TRACKING_SLEEP_MS — CFG-SLEEP duration sent to the GPS when
+  // GpsMode::OnWhenTracking is active but tracking is NOT running.  CFG-SLEEP
+  // is timer-based and auto-wakes; there is no orchestrator-visible signal for
+  // a timer auto-wake (the GpsService task resyncs the UART internally and
+  // posts no event), so we cannot cleanly re-sleep on auto-wake.  We instead
+  // pick a duration long enough that the residual wake-every-N behaviour is a
+  // negligible power leak: 8 h matches the learning-path constant.  Tracking
+  // start wakes the module early via the I/O-expander pulse
+  // (GpsService::wake_from_sleep), so the timer is only a fail-safe ceiling on
+  // how long the module stays asleep when tracking never starts.  Residual
+  // behaviour: if the device stays in OnWhenTracking-idle for >8 h, the module
+  // self-wakes once, the task resyncs the UART, and the GPS draws active
+  // current until the next stop_tracking/settings transition re-issues sleep.
+  // Documented and accepted; do NOT treat the module as guaranteed-asleep.
+  static constexpr uint32_t GPS_NOT_TRACKING_SLEEP_MS = 8u * 60u * 60u * 1000u;
+
   // Admin-mode entry gesture: ADMIN_TAP_COUNT rapid Select taps within
   // ADMIN_TAP_WINDOW_MS arms the sequence; then each subsequent step
   // (Left, Right) must complete within ADMIN_STEP_TIMEOUT_MS.  On success
@@ -296,7 +312,26 @@ private:
 
   // --- Helpers ---
   bool is_gps_active() const;
+
+  /// Bring the GPS into its active (tracking/AlwaysOn) state.  If the module
+  /// is parked in CFG-SLEEP from a prior OnWhenTracking-idle transition, this
+  /// pulses the wake line (GpsService::wake_from_sleep) before (re)starting the
+  /// task.  Centralises the "GPS now needed" half of the power-state matrix so
+  /// every transition site (start_tracking, apply_settings_change, change_mode,
+  /// BLE config set) behaves identically.  No-op-guarded while
+  /// _in_learning_low_power (learning owns the GPS sleep/wake).
+  void activate_gps();
+
+  /// Drive the GPS into its not-active power state.  The state depends on WHY
+  /// the GPS is no longer needed, which is derived from the current GpsMode:
+  ///   - GpsMode::OnWhenTracking → CFG-SLEEP (GPS_NOT_TRACKING_SLEEP_MS), so the
+  ///     I/O-expander pulse can wake it cheaply when tracking restarts.
+  ///   - GpsMode::AlwaysOff      → stop_and_idle_gnss() (fully off, not asleep).
+  /// AlwaysOn never reaches this path (is_gps_active() stays true).  Always
+  /// clears _latest_gps so the UI drops the stale fix.  No-op-guarded while
+  /// _in_learning_low_power.
   void deactivate_gps();
+
   uint32_t generate_session_id();
   RtcAppState snapshot_state() const;
 };

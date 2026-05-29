@@ -490,12 +490,22 @@ void Orchestrator::on_bms_status_timer() {
       _svc.ble_service.deinit();
       _in_learning_low_power = true;
     } else if (!want_low_power && _in_learning_low_power) {
-      AG_LOGI(TAG, "battery learning: exiting LOW_POWER (SPS30 wake, GPS wake, "
+      AG_LOGI(TAG, "battery learning: exiting LOW_POWER (SPS30 wake, GPS restore, "
                    "BLE re-init, SCD4x periodic, SGP41 sampler on)");
       // Clear the flag first so the prepare's wake+warmup isn't gated out by
-      // the LOW_POWER pre-wake guard in check_timers().
+      // the LOW_POWER pre-wake guard in check_timers(), and so the GPS helpers
+      // below act instead of deferring to learning.
       _in_learning_low_power = false;
-      _svc.gps_service.wake_from_sleep();
+      // Restore the GPS to whatever the current mode/tracking dictates: wake +
+      // start when it should be active, or re-sleep/idle when it should not.
+      // Learning held the module in CFG-SLEEP, so the not-active branch parks
+      // it correctly rather than leaving it awake (the old unconditional wake
+      // left an OnWhenTracking-idle device drawing active GPS current).
+      if (is_gps_active()) {
+        activate_gps();
+      } else {
+        deactivate_gps();
+      }
       _svc.sensor_producer.request_low_power(false);
       _svc.sensor_producer.request_prepare();
       _pm_prepare_sent = true;
@@ -927,7 +937,7 @@ void Orchestrator::start_tracking() {
   _behavior = Behavior::Tracking;
 
   if (!was_gps_active && is_gps_active()) {
-    _svc.gps_service.start();
+    activate_gps();
   }
 
   _svc.storage_service.start_route(_tracking_session_id);
@@ -1014,7 +1024,7 @@ void Orchestrator::apply_settings_change() {
 
   const bool is_gps_active_now = is_gps_active();
   if (!was_gps_active && is_gps_active_now) {
-    _svc.gps_service.start();
+    activate_gps();
   } else if (was_gps_active && !is_gps_active_now) {
     deactivate_gps();
   }
@@ -1350,9 +1360,16 @@ void Orchestrator::apply_blearn_action(const BlearnAction &action) {
   } else if (!action.low_power && _in_learning_low_power) {
     AG_LOGI(TAG, "blearn: exiting LOW_POWER (full load for discharge)");
     // Clear the flag first so the prepare's wake+warmup isn't gated out by
-    // the LOW_POWER pre-wake guard in check_timers().
+    // the LOW_POWER pre-wake guard in check_timers(), and so the GPS helpers
+    // below act instead of deferring to learning.
     _in_learning_low_power = false;
-    _svc.gps_service.wake_from_sleep();
+    // Restore the GPS to the current mode/tracking state rather than blindly
+    // waking it: an OnWhenTracking-idle device must stay parked in CFG-SLEEP.
+    if (is_gps_active()) {
+      activate_gps();
+    } else {
+      deactivate_gps();
+    }
     _svc.sensor_producer.request_low_power(false);
     _svc.sensor_producer.request_prepare();
     _pm_prepare_sent = true;
@@ -1467,7 +1484,7 @@ void Orchestrator::on_ble_config_write() {
 
     const bool is_gps_active_now = is_gps_active();
     if (!was_gps_active && is_gps_active_now) {
-      _svc.gps_service.start();
+      activate_gps();
     } else if (was_gps_active && !is_gps_active_now) {
       deactivate_gps();
     }
@@ -1809,9 +1826,51 @@ void Orchestrator::prepare_for_sleep(uint32_t sleep_duration_ms) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+void Orchestrator::activate_gps() {
+  // Learning owns the GPS while it holds the module in CFG-SLEEP for its own
+  // OCV-quiet-load reasons.  Don't fight it — the learning-exit path restores
+  // the correct GPS state for the current mode/tracking once it releases.
+  if (_in_learning_low_power) {
+    AG_LOGI(TAG, "activate_gps: deferred (learning owns GPS)");
+    return;
+  }
+
+  // If the module is parked in CFG-SLEEP (entered via deactivate_gps in the
+  // OnWhenTracking-idle case), pulse the I/O-expander wake line first so it is
+  // listening before we (re)open the UART.  wake_from_sleep() is a no-op when
+  // no wake handler is registered (e.g. TCA9536 init failed) — in that case the
+  // module can only self-wake on its CFG-SLEEP timer, so start() below may sit
+  // on a 9600-baud link until the GpsService task's deadline resync recovers
+  // it.  No silent failure: the no-handler case is logged by the driver.
+  _svc.gps_service.wake_from_sleep();
+  _svc.gps_service.start();
+}
+
 void Orchestrator::deactivate_gps() {
-  _svc.gps_service.stop_and_idle_gnss();
   _latest_gps = GpsData{};
+
+  // Learning owns the GPS while _in_learning_low_power: it has already put the
+  // module into its own CFG-SLEEP and will restore state on exit.  Issuing our
+  // own stop/sleep here would race the learning sleep/wake bookkeeping.
+  if (_in_learning_low_power) {
+    AG_LOGI(TAG, "deactivate_gps: deferred (learning owns GPS)");
+    return;
+  }
+
+  // Power-state matrix lives here so it can't drift across the four transition
+  // sites (start/stop_tracking, apply_settings_change, change_mode, BLE set).
+  if (_settings.gps_mode == GpsMode::OnWhenTracking) {
+    // Not tracking but may track again soon — park the receiver in CFG-SLEEP so
+    // the expander pulse can wake it cheaply, rather than a full GNSS stop.
+    AG_LOGI(TAG, "deactivate_gps: OnWhenTracking idle -> CFG-SLEEP (%u h)",
+            GPS_NOT_TRACKING_SLEEP_MS / 3600000U);
+    _svc.gps_service.sleep_for_ms(GPS_NOT_TRACKING_SLEEP_MS);
+  } else {
+    // AlwaysOff (the only other mode that reaches here) — fully stop the GNSS
+    // receiver. AlwaysOn never deactivates (is_gps_active() stays true).
+    AG_LOGI(TAG, "deactivate_gps: GPS mode off -> stop_and_idle_gnss");
+    _svc.gps_service.stop_and_idle_gnss();
+  }
 }
 
 bool Orchestrator::is_gps_active() const {

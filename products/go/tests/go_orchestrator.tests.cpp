@@ -43,6 +43,9 @@ extern bool gps_idle_called;
 extern int gps_posting_interval_ms;
 extern bool gps_aiding_set;
 extern GpsAidingData gps_aiding_data;
+extern bool gps_sleep_called;
+extern uint32_t gps_sleep_last_duration_ms;
+extern bool gps_wake_called;
 
 extern bool input_started;
 extern bool input_stopped;
@@ -262,6 +265,13 @@ public:
     o.reschedule_sensor_timer(prev);
   }
   static void set_in_learning_low_power(Orchestrator &o, bool v) { o._in_learning_low_power = v; }
+  static void activate_gps(Orchestrator &o) { o.activate_gps(); }
+  static void deactivate_gps(Orchestrator &o) { o.deactivate_gps(); }
+
+  // Expose the private GPS-not-tracking CFG-SLEEP duration for assertions.
+  static constexpr uint32_t gps_not_tracking_sleep_ms() {
+    return Orchestrator::GPS_NOT_TRACKING_SLEEP_MS;
+  }
 };
 
 using A = OrchestratorTestAccess;
@@ -2867,18 +2877,24 @@ TEST_CASE("apply_settings_change: AlwaysOn to AlwaysOff stops and idles GPS",
   CHECK_FALSE(test_spy::gps_started);
 }
 
-TEST_CASE("start_tracking: OnWhenTracking mode starts GPS service", "[Orchestrator][gps_sync]") {
+TEST_CASE("start_tracking: OnWhenTracking mode wakes then starts GPS service",
+          "[Orchestrator][gps_sync]") {
   TestFixture f;
   f.settings.gps_mode = GpsMode::OnWhenTracking;
   auto orch = f.make_orchestrator();
 
   test_spy::gps_started = false;
+  test_spy::gps_wake_called = false;
   A::start_tracking(orch);
 
+  // Coming from OnWhenTracking-idle, the module may be parked in CFG-SLEEP, so
+  // activate_gps() pulses the expander wake line before (re)starting the task.
+  CHECK(test_spy::gps_wake_called);
   CHECK(test_spy::gps_started);
 }
 
-TEST_CASE("stop_tracking: OnWhenTracking mode stops and idles GPS", "[Orchestrator][gps_sync]") {
+TEST_CASE("stop_tracking: OnWhenTracking mode parks GPS in CFG-SLEEP",
+          "[Orchestrator][gps_sync]") {
   TestFixture f;
   f.settings.gps_mode = GpsMode::OnWhenTracking;
   auto orch = f.make_orchestrator();
@@ -2890,10 +2906,15 @@ TEST_CASE("stop_tracking: OnWhenTracking mode stops and idles GPS", "[Orchestrat
 
   A::start_tracking(orch);
   test_spy::gps_stop_and_idle_called = false;
+  test_spy::gps_sleep_called = false;
 
   A::stop_tracking(orch);
 
-  CHECK(test_spy::gps_stop_and_idle_called);
+  // OnWhenTracking idle now enters CFG-SLEEP (expander can wake it on the next
+  // tracking start) rather than fully stopping the GNSS receiver.
+  CHECK(test_spy::gps_sleep_called);
+  CHECK(test_spy::gps_sleep_last_duration_ms == A::gps_not_tracking_sleep_ms());
+  CHECK_FALSE(test_spy::gps_stop_and_idle_called);
 }
 
 TEST_CASE("start_tracking: AlwaysOn mode does not re-start GPS", "[Orchestrator][gps_sync]") {
@@ -3065,4 +3086,119 @@ TEST_CASE("stop_tracking: OnWhenTracking clears stale GPS fix from build_context
   BuildContext ctx_after = A::build_context(orch);
   CHECK_FALSE(ctx_after.gps_fix);
   CHECK_FALSE(ctx_after.gps_enabled);
+}
+
+// ============================================================================
+// GPS CFG-SLEEP power state (OnWhenTracking idle parks the receiver asleep)
+// ============================================================================
+
+TEST_CASE("stop_tracking: AlwaysOn mode never sleeps the GPS", "[Orchestrator][gps_sync]") {
+  TestFixture f;
+  f.settings.gps_mode = GpsMode::AlwaysOn;
+  auto orch = f.make_orchestrator();
+
+  ALLOW_CALL(f.mock_config, get_int(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::NOT_FOUND);
+  ALLOW_CALL(f.mock_config, set_int(trompeloeil::_, trompeloeil::_)).RETURN(ConfigStoreResult::OK);
+  ALLOW_CALL(f.mock_config, commit()).RETURN(ConfigStoreResult::OK);
+
+  A::start_tracking(orch);
+  test_spy::gps_sleep_called = false;
+  test_spy::gps_stop_and_idle_called = false;
+
+  A::stop_tracking(orch);
+
+  // AlwaysOn keeps is_gps_active() true on tracking stop, so neither CFG-SLEEP
+  // nor a GNSS stop is issued.
+  CHECK_FALSE(test_spy::gps_sleep_called);
+  CHECK_FALSE(test_spy::gps_stop_and_idle_called);
+}
+
+TEST_CASE("apply_settings_change: AlwaysOn to AlwaysOff stops GPS without CFG-SLEEP",
+          "[Orchestrator][gps_sync]") {
+  TestFixture f;
+  f.settings.gps_mode = GpsMode::AlwaysOn;
+  auto orch = f.make_orchestrator();
+
+  GoSettings updated = f.settings;
+  updated.gps_mode = GpsMode::AlwaysOff;
+  f.ui_manager.sync_settings(updated);
+
+  ALLOW_CALL(f.mock_config, set_int(trompeloeil::_, trompeloeil::_)).RETURN(ConfigStoreResult::OK);
+  ALLOW_CALL(f.mock_config, set_bool(trompeloeil::_, trompeloeil::_)).RETURN(ConfigStoreResult::OK);
+  ALLOW_CALL(f.mock_config, set_string(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::OK);
+  ALLOW_CALL(f.mock_config, commit()).RETURN(ConfigStoreResult::OK);
+
+  test_spy::gps_sleep_called = false;
+  test_spy::gps_stop_and_idle_called = false;
+  A::apply_settings_change(orch);
+
+  // AlwaysOff is "disabled", not "asleep" — fully stop the GNSS, no CFG-SLEEP.
+  CHECK(test_spy::gps_stop_and_idle_called);
+  CHECK_FALSE(test_spy::gps_sleep_called);
+}
+
+TEST_CASE("deactivate_gps: AlwaysOff path does not enter CFG-SLEEP",
+          "[Orchestrator][gps_sync]") {
+  TestFixture f;
+  f.settings.gps_mode = GpsMode::AlwaysOff;
+  auto orch = f.make_orchestrator();
+
+  test_spy::gps_sleep_called = false;
+  test_spy::gps_stop_and_idle_called = false;
+
+  A::deactivate_gps(orch);
+
+  CHECK(test_spy::gps_stop_and_idle_called);
+  CHECK_FALSE(test_spy::gps_sleep_called);
+}
+
+TEST_CASE("stop_tracking: learning low-power active defers GPS sleep to learning",
+          "[Orchestrator][gps_sync][learning]") {
+  TestFixture f;
+  f.settings.gps_mode = GpsMode::OnWhenTracking;
+  auto orch = f.make_orchestrator();
+
+  ALLOW_CALL(f.mock_config, get_int(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::NOT_FOUND);
+  ALLOW_CALL(f.mock_config, set_int(trompeloeil::_, trompeloeil::_)).RETURN(ConfigStoreResult::OK);
+  ALLOW_CALL(f.mock_config, commit()).RETURN(ConfigStoreResult::OK);
+
+  A::start_tracking(orch);
+  // Learning owns the GPS sleep/wake while in low-power.
+  A::set_in_learning_low_power(orch, true);
+  test_spy::gps_sleep_called = false;
+  test_spy::gps_stop_and_idle_called = false;
+
+  A::stop_tracking(orch);
+
+  // The not-tracking path must not issue its own sleep/idle while learning
+  // owns the GPS — but the stale fix is still cleared for the UI.
+  CHECK_FALSE(test_spy::gps_sleep_called);
+  CHECK_FALSE(test_spy::gps_stop_and_idle_called);
+  CHECK(A::latest_gps(orch).fix.fix_type == GpsFixType::NoFix);
+}
+
+TEST_CASE("start_tracking: learning low-power active defers GPS wake to learning",
+          "[Orchestrator][gps_sync][learning]") {
+  TestFixture f;
+  f.settings.gps_mode = GpsMode::OnWhenTracking;
+  auto orch = f.make_orchestrator();
+
+  ALLOW_CALL(f.mock_config, get_int(trompeloeil::_, trompeloeil::_))
+      .RETURN(ConfigStoreResult::NOT_FOUND);
+  ALLOW_CALL(f.mock_config, set_int(trompeloeil::_, trompeloeil::_)).RETURN(ConfigStoreResult::OK);
+  ALLOW_CALL(f.mock_config, commit()).RETURN(ConfigStoreResult::OK);
+
+  A::set_in_learning_low_power(orch, true);
+  test_spy::gps_started = false;
+  test_spy::gps_wake_called = false;
+
+  A::start_tracking(orch);
+
+  // Learning holds the module in its own CFG-SLEEP; the tracking-start path
+  // must not fight it by waking/starting the GPS task itself.
+  CHECK_FALSE(test_spy::gps_wake_called);
+  CHECK_FALSE(test_spy::gps_started);
 }
