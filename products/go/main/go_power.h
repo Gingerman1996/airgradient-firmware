@@ -20,31 +20,6 @@
 
 #include <cstdint>
 
-class FuelGaugeDevice;
-
-// ---------------------------------------------------------------------------
-// BatteryPercentSource
-// ---------------------------------------------------------------------------
-
-/// Identifies where the battery_percentage value in PowerSnapshot came from.
-enum class BatteryPercentSource : uint8_t {
-  Unknown,        ///< Not yet polled
-  FuelGauge,      ///< Read from BQ27427 (V1 with FG attached, read OK)
-  BatteryCharger, ///< Voltage-curve estimate from BQ25629 (fallback)
-};
-
-inline const char *bms_battery_percent_source_str(BatteryPercentSource s) {
-  switch (s) {
-  case BatteryPercentSource::Unknown:
-    return "Unknown";
-  case BatteryPercentSource::FuelGauge:
-    return "FG";
-  case BatteryPercentSource::BatteryCharger:
-    return "BMS";
-  }
-  return "?";
-}
-
 // ---------------------------------------------------------------------------
 // PowerSnapshot
 // ---------------------------------------------------------------------------
@@ -134,9 +109,6 @@ public:
     int pin_ext_wdt = -1;                      ///< External watchdog GPIO (-1 = disabled)
     int deep_sleep_threshold_ms = 5000;        ///< Minimum interval (ms) to prefer deep sleep
     int pin_pm_power = -1;                     ///< PM sensor power GPIO (-1 = no hold)
-    uint8_t pm_power_on_level = 1;             ///< GPIO level meaning "PM on"
-                                               ///<   Prototype: 1 (active-high)
-                                               ///<   v1:        0 (active-low)
     uint32_t sensor_hold_max_sleep_ms = 20000; ///< Max sleep (ms) to hold PM sensor powered
     uint32_t pm_sleep_threshold_ms = 20000;    ///< Min measure interval (ms) to power-cycle PM
   };
@@ -487,6 +459,9 @@ private:
   /// Configure timer and GPIO wake sources before entering sleep.
   /// Wrapped in #ifndef TEST_HOST — not callable from host test builds.
   void configure_wake_sources(uint32_t timer_ms);
+
+  /// Reconcile the PMID mode with the current charger power source.
+  bool sync_pmid_mode(BmsPowerSource power_source);
 };
 
 // ---------------------------------------------------------------------------

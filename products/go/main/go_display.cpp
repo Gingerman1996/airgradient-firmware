@@ -7,8 +7,6 @@
 #include <cstdio>
 #include <cstring>
 
-#include "go_text_wrap.h"
-
 #include <driver/gpio.h>
 #include <esp_attr.h>
 #include <esp_heap_caps.h>
@@ -886,74 +884,6 @@ void draw_cell(u8g2_t *u, int index, const char *label, const char *value, bool 
   }
 }
 
-// ---------------------------------------------------------------------------
-// Session-screen helpers (Info / Provisioning / ProvisioningConfirm)
-// ---------------------------------------------------------------------------
-
-inline bool is_session_screen(Screen s) {
-  return s == Screen::Info || s == Screen::Provisioning || s == Screen::ProvisioningConfirm;
-}
-
-// Non-capturing StrWidthFn that forwards to u8g2_GetStrWidth.  The text
-// passed by compute_wrapped_lines() is not NUL-terminated, so copy into a
-// small stack scratch buffer first.
-int u8g2_str_width_fn(const char *text, size_t len, void *ctx) {
-  auto *u = static_cast<u8g2_t *>(ctx);
-  char buf[64];
-  size_t copy_len = (len < sizeof(buf)) ? len : sizeof(buf) - 1;
-  if (text != nullptr && copy_len > 0) {
-    memcpy(buf, text, copy_len);
-  }
-  buf[copy_len] = '\0';
-  return static_cast<int>(u8g2_GetStrWidth(u, buf));
-}
-
-// Product-local QR rendering parameters; matrix data is shared via
-// AirgradientProvisioning::QrCode.
-constexpr int QR_MODULE_PX = 2;
-constexpr int QR_QUIET_MODULES = 4;
-
-// Draw `qr` centered at `center_x` with its quiet-zone top edge at
-// `y_top`.  No-op on null or empty matrix.
-void draw_provisioning_qr(u8g2_t *u, const AirgradientProvisioning::QrCode *qr, int center_x,
-                          int y_top) {
-  if (qr == nullptr) {
-    return;
-  }
-  const int modules = qr->size();
-  if (modules <= 0) {
-    return;
-  }
-  const int total_px = (modules + QR_QUIET_MODULES * 2) * QR_MODULE_PX;
-  const int qr_x = center_x - total_px / 2 + QR_QUIET_MODULES * QR_MODULE_PX;
-  const int qr_y = y_top + QR_QUIET_MODULES * QR_MODULE_PX;
-  for (int row = 0; row < modules; ++row) {
-    for (int col = 0; col < modules; ++col) {
-      if (qr->module_on(col, row)) {
-        u8g2_DrawBox(u, qr_x + col * QR_MODULE_PX, qr_y + row * QR_MODULE_PX, QR_MODULE_PX,
-                     QR_MODULE_PX);
-      }
-    }
-  }
-}
-
-void draw_provisioning_separator(u8g2_t *u, int y) { u8g2_DrawHLine(u, 10, y, SCREEN_W - 20); }
-
-void draw_provisioning_action_row(u8g2_t *u, const char *text, int y, bool selected) {
-  constexpr int ROW_H = 18;
-  constexpr int ROW_X = 4;
-  constexpr int ROW_W = SCREEN_W - 8;
-  if (selected) {
-    u8g2_DrawBox(u, ROW_X, y, ROW_W, ROW_H);
-    u8g2_SetDrawColor(u, 1);
-  }
-  u8g2_SetFont(u, u8g2_font_6x10_tr);
-  draw_centered_text(u, SCREEN_W / 2, y + 12, text);
-  if (selected) {
-    u8g2_SetDrawColor(u, 0);
-  }
-}
-
 // Draw list/menu rows with selection highlight.
 void draw_list_rows(u8g2_t *u, const DisplayValues &v, bool full_screen) {
   const int row_base_y = full_screen ? 20 : 166;
@@ -1083,17 +1013,6 @@ bool DisplayService::update(const DisplayValues &values, bool wait) {
   const bool both_navigable = is_navigable(_prev_values.screen) && is_navigable(values.screen);
   const bool can_partial = (both_navigable && !header_changed) || same_list_screen;
 
-  // Session-screen refresh policy keys off the triple {Info, Provisioning,
-  // ProvisioningConfirm}.  Crossing the session boundary forces a full
-  // refresh so no ghosting from the prior layout remains.  All in-session
-  // transitions use partial refresh — the worker drives the full canvas
-  // (y=0..249) for session screens so Info text under a subsequent
-  // Provisioning / ProvisioningConfirm layout is cleared cleanly without
-  // the Full waveform's ~3 s flash.
-  const bool prev_in_session = is_session_screen(_prev_values.screen);
-  const bool next_in_session = is_session_screen(values.screen);
-  const bool crossing_session_boundary = prev_in_session != next_in_session;
-
   _render_frame(values);
 
   const bool entering_system_screen =
@@ -1103,20 +1022,7 @@ bool DisplayService::update(const DisplayValues &values, bool wait) {
       !entering_system_screen &&
       (is_menu_navigation_screen(_prev_values.screen) || is_menu_navigation_screen(values.screen));
 
-  if (crossing_session_boundary) {
-    // Full refresh on the session boundary.  Reset the partial-op counter
-    // so the next session's partials start with a fresh budget.
-    _pending_mode = RefreshMode::Full;
-    _diff_count = 0;
-    _menu_exited = false;
-  } else if (prev_in_session && next_in_session) {
-    // Intra-session transitions (Info text update, Provisioning status
-    // change, Provisioning <-> ProvisioningConfirm, No <-> Yes) are always
-    // body-only partial refreshes.  The partial-op counter is NOT
-    // consulted inside the session.
-    _pending_mode = RefreshMode::Partial;
-    _menu_exited = false;
-  } else if (menu_navigation) {
+  if (menu_navigation) {
     _pending_mode = RefreshMode::Partial;
     _menu_exited = true;
   } else if (_diff_count >= _config.max_partial_ops) {
@@ -1161,14 +1067,6 @@ void DisplayService::update_sync(const DisplayValues &values) {
   }
   _diff_count = 0;
   _prev_values = values;
-}
-
-void DisplayService::flush() {
-  // Spin until the worker finishes its current job (if any).  Same cheap
-  // polling pattern as clear()/stop().
-  while (_worker_busy) {
-    RTOS::delay_ms(1);
-  }
 }
 
 void DisplayService::clear() {
@@ -1288,11 +1186,6 @@ void DisplayService::_render_frame(const DisplayValues &v) {
     break; // Already handled above
   case Screen::PairingPasskey:
     _draw_pairing_passkey(v);
-    break;
-  case Screen::Info:
-  case Screen::Provisioning:
-  case Screen::ProvisioningConfirm:
-    // Already handled above before the status-bar draw.
     break;
   }
 
@@ -1711,205 +1604,6 @@ void DisplayService::_draw_pairing_passkey(const DisplayValues &v) {
   draw_centered_text(&_u8g2, CONTENT_W / 2, 165, "Enter code on phone");
 }
 
-// ---------------------------------------------------------------------------
-// Session-screen render methods (Info / Provisioning / ProvisioningConfirm)
-// ---------------------------------------------------------------------------
-
-void DisplayService::_draw_info(const DisplayValues &v) {
-  if (v.info_text == nullptr || v.info_text[0] == '\0') {
-    return;
-  }
-
-  // Spec's draft helvB12 is not in this product's compiled u8g2 font set.
-  // helvR12 is the closest available substitute — slightly smaller than
-  // the bold spec font but cleaner at this body-text size, and already
-  // used elsewhere on the Home page (CO2/PM unit captions).  Font choice
-  // is flagged in the spec's Open Questions list for hardware tuning.
-  u8g2_SetFont(&_u8g2, u8g2_font_helvB12_tf);
-  // Extra breathing room between lines beyond the font's natural
-  // cap-to-descender height — keeps multi-line Info text from feeling
-  // cramped at the chosen body-text font size.
-  constexpr int LINE_GAP_PX = 4;
-  const int ascent = u8g2_GetAscent(&_u8g2);
-  const int descent = u8g2_GetDescent(&_u8g2); // negative
-  const int line_h = (ascent - descent) + LINE_GAP_PX;
-
-  static constexpr size_t MAX_INFO_LINES = 8;
-  WrapLine lines[MAX_INFO_LINES];
-  const size_t n = compute_wrapped_lines(v.info_text, SCREEN_W, &u8g2_str_width_fn, &_u8g2, lines,
-                                         MAX_INFO_LINES);
-  if (n == 0) {
-    return;
-  }
-
-  // Vertical center within the body region (y=18..249).  Clamp the top so
-  // the first line never crosses into y < 18 (partial-refresh boundary).
-  const int block_h = static_cast<int>(n) * line_h;
-  int top_y = BODY_Y + (BODY_H - block_h) / 2;
-  if (top_y < BODY_Y) {
-    top_y = BODY_Y;
-  }
-
-  char scratch[64];
-  for (size_t i = 0; i < n; ++i) {
-    size_t L = lines[i].length;
-    if (L >= sizeof(scratch)) {
-      L = sizeof(scratch) - 1;
-    }
-    if (L > 0 && lines[i].begin != nullptr) {
-      memcpy(scratch, lines[i].begin, L);
-    }
-    scratch[L] = '\0';
-
-    const int w = static_cast<int>(u8g2_GetStrWidth(&_u8g2, scratch));
-    const int x = (SCREEN_W - w) / 2;
-    const int baseline_y = top_y + ascent + static_cast<int>(i) * line_h;
-    draw_text(&_u8g2, x, baseline_y, scratch);
-  }
-}
-
-void DisplayService::_draw_provisioning(const DisplayValues &v) {
-  // ProvisioningTransport::BleOnly == 0, ProvisioningTransport::WifiOnly == 1.
-  const bool ble_active = (v.provisioning_transport == 0);
-
-  // Layout coordinates ported from the design sandbox
-  // (test/go-ui/main/go-ui.cpp) — keep in sync with spec.
-  constexpr int TITLE_L1_Y = 21;
-  constexpr int TITLE_L2_Y = 40;
-  constexpr int QR_TOP_Y = 40;
-  constexpr int QR_CAPTION_Y = 118;
-  constexpr int INSTRUCTION_L1_Y = 136;
-  constexpr int INSTRUCTION_L2_Y = 150;
-  constexpr int STATUS_TOP_Y = 162;
-  constexpr int STATUS_TEXT_Y = 183;
-  constexpr int STATUS_BOTTOM_Y = 196;
-  constexpr int ACTION_HELPER_Y = 210;
-  constexpr int ACTION_ROW0_Y = 216;
-  constexpr int ACTION_ROW1_Y = 232;
-
-  // --- Title ---
-  u8g2_SetFont(&_u8g2, u8g2_font_logisoso16_tr);
-  draw_centered_text(&_u8g2, SCREEN_W / 2, TITLE_L1_Y, "Connect");
-  draw_centered_text(&_u8g2, SCREEN_W / 2, TITLE_L2_Y, "to Wi-Fi");
-
-  // --- QR code (UIManager encodes go-to-app for BleOnly, WIFI:... for WifiOnly) ---
-  draw_provisioning_qr(&_u8g2, v.provisioning_qr, SCREEN_W / 2, QR_TOP_Y);
-
-  // --- QR caption ---
-  u8g2_SetFont(&_u8g2, u8g2_font_helvR08_tr);
-  draw_centered_text(&_u8g2, SCREEN_W / 2, QR_CAPTION_Y,
-                     ble_active ? "Scan to get the app" : "Scan to auto-join");
-
-  // --- Instructions (transport-specific) ---
-  if (ble_active) {
-    u8g2_SetFont(&_u8g2, u8g2_font_helvR08_tr);
-    draw_centered_text(&_u8g2, SCREEN_W / 2, INSTRUCTION_L1_Y, "Use AirGradient app");
-    draw_centered_text(&_u8g2, SCREEN_W / 2, INSTRUCTION_L2_Y, "to continue");
-  } else {
-    u8g2_SetFont(&_u8g2, u8g2_font_helvR08_tr);
-    const char *ssid = (v.provisioning_ap_ssid != nullptr) ? v.provisioning_ap_ssid : "airgradient";
-    draw_centered_text(&_u8g2, SCREEN_W / 2, INSTRUCTION_L1_Y, ssid);
-    u8g2_SetFont(&_u8g2, u8g2_font_helvB08_tf);
-    char pwd_buf[40];
-    const char *password =
-        (v.provisioning_ap_password != nullptr) ? v.provisioning_ap_password : "cleanair";
-    (void)snprintf(pwd_buf, sizeof(pwd_buf), "Password: %s", password);
-    draw_centered_text(&_u8g2, SCREEN_W / 2, INSTRUCTION_L2_Y, pwd_buf);
-  }
-
-  // --- Status line (within HLine separators) ---
-  // Auto-wrap the status string to at most 2 lines so long entries like
-  // "Connected! 192.168.x.y" or "Connect failed - try again" don't clip
-  // off the screen edges.  The status band y=163..195 (32 px) fits two
-  // helvB08 lines (~10 px each) with breathing room around the separators.
-  draw_provisioning_separator(&_u8g2, STATUS_TOP_Y);
-  u8g2_SetFont(&_u8g2, u8g2_font_helvB08_tf);
-  if (v.provisioning_status != nullptr && v.provisioning_status[0] != '\0') {
-    constexpr size_t MAX_STATUS_LINES = 2;
-    WrapLine status_lines[MAX_STATUS_LINES];
-    const size_t n = compute_wrapped_lines(v.provisioning_status, SCREEN_W, &u8g2_str_width_fn,
-                                           &_u8g2, status_lines, MAX_STATUS_LINES);
-    // Single-line keeps the original baseline; two-line splits +/- 6 px
-    // around the single-line baseline so the block stays centered in the
-    // status band.
-    constexpr int STATUS_LINE_GAP_PX = 12;
-    const int two_line_top = STATUS_TEXT_Y - STATUS_LINE_GAP_PX / 2;
-    char scratch[64];
-    for (size_t i = 0; i < n; ++i) {
-      size_t L = status_lines[i].length;
-      if (L >= sizeof(scratch)) {
-        L = sizeof(scratch) - 1;
-      }
-      if (L > 0 && status_lines[i].begin != nullptr) {
-        memcpy(scratch, status_lines[i].begin, L);
-      }
-      scratch[L] = '\0';
-      const int baseline_y =
-          (n == 1) ? STATUS_TEXT_Y : two_line_top + static_cast<int>(i) * STATUS_LINE_GAP_PX;
-      draw_centered_text(&_u8g2, SCREEN_W / 2, baseline_y, scratch);
-    }
-  }
-  draw_provisioning_separator(&_u8g2, STATUS_BOTTOM_Y);
-
-  // --- Helper text + action rows ---
-  u8g2_SetFont(&_u8g2, u8g2_font_6x10_tr);
-  draw_centered_text(&_u8g2, SCREEN_W / 2, ACTION_HELPER_Y,
-                     ble_active ? "Setup without app?" : "Prefer the app?");
-
-  // Action labels come from UIManager via v.rows[0..1].  Selection drives
-  // which row gets the filled rectangle.
-  const char *row0 = (v.row_count >= 1) ? v.rows[0].text : "";
-  const char *row1 = (v.row_count >= 2) ? v.rows[1].text : "";
-  draw_provisioning_action_row(&_u8g2, row0, ACTION_ROW0_Y, v.selected_row == 0);
-  draw_provisioning_action_row(&_u8g2, row1, ACTION_ROW1_Y, v.selected_row == 1);
-}
-
-void DisplayService::_draw_provisioning_confirm(const DisplayValues &v) {
-  // Question text picked by orchestrator/UIManager: surfaced through
-  // v.rows[0].text (kind + active transport are folded into one string).
-  const char *question = (v.row_count >= 1) ? v.rows[0].text : "Confirm?";
-
-  // Buttons: No (index 0, default) on the left, Yes (index 1) on the right.
-  constexpr int QUESTION_Y = 110;
-  constexpr int BTN_Y = 140;
-  constexpr int BTN_H = 24;
-  constexpr int BTN_W = 50;
-  constexpr int BTN_NO_X = 10;
-  constexpr int BTN_YES_X = SCREEN_W - BTN_NO_X - BTN_W;
-  constexpr int BTN_TEXT_BASELINE = BTN_Y + 16;
-
-  u8g2_SetFont(&_u8g2, u8g2_font_helvB08_tf);
-  draw_centered_text(&_u8g2, SCREEN_W / 2, QUESTION_Y, question);
-
-  const bool no_selected = (v.provisioning_confirm_index == 0);
-
-  // No button
-  if (no_selected) {
-    u8g2_DrawBox(&_u8g2, BTN_NO_X, BTN_Y, BTN_W, BTN_H);
-    u8g2_SetDrawColor(&_u8g2, 1);
-  } else {
-    u8g2_DrawFrame(&_u8g2, BTN_NO_X, BTN_Y, BTN_W, BTN_H);
-  }
-  u8g2_SetFont(&_u8g2, u8g2_font_6x10_tr);
-  draw_centered_text(&_u8g2, BTN_NO_X + BTN_W / 2, BTN_TEXT_BASELINE, "No");
-  if (no_selected) {
-    u8g2_SetDrawColor(&_u8g2, 0);
-  }
-
-  // Yes button
-  if (!no_selected) {
-    u8g2_DrawBox(&_u8g2, BTN_YES_X, BTN_Y, BTN_W, BTN_H);
-    u8g2_SetDrawColor(&_u8g2, 1);
-  } else {
-    u8g2_DrawFrame(&_u8g2, BTN_YES_X, BTN_Y, BTN_W, BTN_H);
-  }
-  u8g2_SetFont(&_u8g2, u8g2_font_6x10_tr);
-  draw_centered_text(&_u8g2, BTN_YES_X + BTN_W / 2, BTN_TEXT_BASELINE, "Yes");
-  if (!no_selected) {
-    u8g2_SetDrawColor(&_u8g2, 0);
-  }
-}
-
 void DisplayService::_draw_chart(const DisplayValues &v) {
   // Polyline only — no axes, no border lines.
   if (v.chart_samples == nullptr || v.chart_count == 0)
@@ -1990,16 +1684,8 @@ void DisplayService::_worker_loop() {
     case RefreshMode::Partial:
       err = driver_part_begin();
       if (err == ESP_OK) {
-        // Session screens (Info / Provisioning / ProvisioningConfirm) own
-        // the full canvas — the title region (y=0..17) is part of their
-        // layout, so a body-only partial would leave the prior frame's
-        // pixels there ghosting under the new content.  Push the whole
-        // 128x250 frame for those; everything else stays body-only.
-        const bool session = is_session_screen(_prev_values.screen);
-        const int y0 = session ? 0 : BODY_Y;
-        const int h = session ? FULL_H : BODY_H;
-        memcpy(_region_buf, _spi_buf + y0 * BUF_ROW_BYTES, h * BUF_ROW_BYTES);
-        err = driver_part_write_region(0, y0, _region_buf, h, SCREEN_W);
+        memcpy(_region_buf, _spi_buf + BODY_Y * BUF_ROW_BYTES, BODY_H * BUF_ROW_BYTES);
+        err = driver_part_write_region(0, BODY_Y, _region_buf, BODY_H, SCREEN_W);
       }
       if (err == ESP_OK)
         err = driver_part_commit();

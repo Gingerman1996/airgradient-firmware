@@ -37,15 +37,12 @@
 #include "drivers/bq27427/bq27427.h"
 #include "go_power.h"
 
-#include "hal/fuel_gauge_device.h"
-
 #include <algorithm>
 #include <cinttypes>
 #include <cstring>
 
 #include "ag_log.h"
 #include "common.h"
-#include "rtos.h"
 
 static constexpr const char *TAG = "PowerService";
 
@@ -67,8 +64,6 @@ RTC_DATA_ATTR static bool s_rtc_state_valid = false;
 PowerService::PowerService(BmsDevice &bms, const gpio::Hal &gpio, const Config &config)
     : _bms(bms), _gpio(gpio), _config(config) {}
 
-void PowerService::set_fuel_gauge(FuelGaugeDevice *fg) { _fg = fg; }
-
 // ---------------------------------------------------------------------------
 // BMS operations
 // ---------------------------------------------------------------------------
@@ -79,7 +74,6 @@ PowerSnapshot PowerService::poll_bms() {
   // --- BMS telemetry (BQ25629) ---
   BmsTelemetry telemetry{};
   if (_bms.read_telemetry(telemetry)) {
-    telemetry_ok = true;
     if (telemetry.is_battery_voltage_valid()) {
       status.battery_voltage = telemetry.battery_voltage;
     }
@@ -502,6 +496,13 @@ bool PowerService::poll_status(BmsStatus &status) {
     AG_LOGW(TAG, "poll_status: read_status() failed");
     return false;
   }
+
+  if (!sync_pmid_mode(status.power_source)) {
+    AG_LOGW(TAG, "poll_status: failed to sync PMID mode for source %s",
+            bms_power_source_str(status.power_source));
+    return false;
+  }
+
   return true;
 }
 
@@ -642,12 +643,6 @@ bool PowerService::should_hold_pm_sensor(uint32_t sleep_duration_ms) const {
 bool PowerService::should_sleep_pm_sensor(uint32_t measure_interval_ms) const {
   return _config.pin_pm_power >= 0 && measure_interval_ms >= _config.pm_sleep_threshold_ms;
 }
-
-/// Settling delay between EN_OTG=1 (boost armed) and the EN_PM GPIO write.
-/// BQ25629 boost soft-start is sub-millisecond; PMID rail capacitance and
-/// load-switch turn-on add a few ms.  Conservative starting value; bench-
-/// verify the first SPS30 frame still arrives within the 10 s warmup budget.
-static constexpr uint32_t PM_PMID_SETTLE_MS = 300;
 
 void PowerService::set_pm_power(bool on) {
   if (_config.pin_pm_power < 0) {

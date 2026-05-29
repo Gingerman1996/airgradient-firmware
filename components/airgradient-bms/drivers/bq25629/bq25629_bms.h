@@ -59,7 +59,7 @@ private:
 
   drivers::BQ25629 _charger;
   drivers::BQ25629_Config _config;
-  bool _pmid_enabled = false;
+  BmsPmidMode _pmid_mode = BmsPmidMode::Unknown;
 };
 
 #endif // BQ25629_BMS_H

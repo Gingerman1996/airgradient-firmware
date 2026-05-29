@@ -7,7 +7,6 @@
 #include "config_store.h"
 #include "go_melody.h"
 #include "go_types.h"
-#include "types/wifi_types.h"
 
 /// Persisted stage of the automated battery-learning (blearn) run.  A stage +
 /// a cycle counter encode the whole multi-cycle run without a flat per-cycle
@@ -114,10 +113,6 @@ struct GoSettings {
 
   // --- Identity ---
   std::string device_name = "airgradient-go";
-
-  // --- Stationary connectivity ---
-  bool disable_cloud = false;     // honored by CloudService
-  WifiStaticIpConfig static_ip{}; // ip == 0 means DHCP
 };
 
 GoSettings load_go_settings(ConfigStore &store);

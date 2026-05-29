@@ -22,6 +22,7 @@
 
 #ifndef TEST_HOST
 #include "sdkconfig.h"
+#include "nimble_ble_server.h"
 #endif
 #include "rtos.h"
 
@@ -132,9 +133,8 @@ uint16_t BleService::history_properties() {
   return props;
 }
 
-BleService::BleService(RtosQueueHandle event_queue, StorageService &storage,
-                       AgBleServer &ble_server)
-    : _event_queue(event_queue), _storage(storage), _server(&ble_server) {}
+BleService::BleService(RtosQueueHandle event_queue, StorageService &storage)
+    : _event_queue(event_queue), _storage(storage) {}
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -143,7 +143,7 @@ BleService::BleService(RtosQueueHandle event_queue, StorageService &storage,
 #ifndef TEST_HOST
 
 bool BleService::init(const char *serial) {
-  if (_initialized) {
+  if (_server != nullptr) {
     AG_LOGW(TAG, "already initialized");
     return true;
   }
@@ -152,10 +152,13 @@ bool BleService::init(const char *serial) {
   char adv_name[ADV_NAME_MAX_LEN] = {};
   snprintf(adv_name, sizeof(adv_name), "%s%s", ADV_NAME_PREFIX, serial ? serial : "000000");
 
-  // BLE server is borrowed from the board; the orchestrator guarantees
-  // mutual exclusion across operating modes.
+  // Create NimBLE server (static — lives until deinit)
+  static NimbleBleServer ble_server;
+  _server = &ble_server;
+
   if (!_server->init(adv_name)) {
     AG_LOGE(TAG, "BLE stack init failed");
+    _server = nullptr;
     return false;
   }
 
@@ -165,6 +168,7 @@ bool BleService::init(const char *serial) {
                                AgBleAuth::BOND | AgBleAuth::MITM)) {
       AG_LOGE(TAG, "set_security failed");
       _server->deinit();
+      _server = nullptr;
       return false;
     }
   } else {
@@ -176,6 +180,7 @@ bool BleService::init(const char *serial) {
   if (svc == nullptr) {
     AG_LOGE(TAG, "add_service failed");
     _server->deinit();
+    _server = nullptr;
     return false;
   }
 
@@ -186,6 +191,7 @@ bool BleService::init(const char *serial) {
   if (_measures_char == nullptr) {
     AG_LOGE(TAG, "add Measures characteristic failed");
     _server->deinit();
+    _server = nullptr;
     return false;
   }
 
@@ -194,6 +200,7 @@ bool BleService::init(const char *serial) {
   if (_status_char == nullptr) {
     AG_LOGE(TAG, "add Status characteristic failed");
     _server->deinit();
+    _server = nullptr;
     return false;
   }
 
@@ -202,6 +209,7 @@ bool BleService::init(const char *serial) {
   if (_config_char == nullptr) {
     AG_LOGE(TAG, "add Config characteristic failed");
     _server->deinit();
+    _server = nullptr;
     return false;
   }
 
@@ -210,6 +218,7 @@ bool BleService::init(const char *serial) {
   if (_history_char == nullptr) {
     AG_LOGE(TAG, "add History characteristic failed");
     _server->deinit();
+    _server = nullptr;
     return false;
   }
 
@@ -223,6 +232,7 @@ bool BleService::init(const char *serial) {
   if (!svc->start()) {
     AG_LOGE(TAG, "service start failed");
     _server->deinit();
+    _server = nullptr;
     return false;
   }
 
@@ -245,22 +255,24 @@ bool BleService::init(const char *serial) {
   if (!_server->set_advertising_name(adv_name)) {
     AG_LOGE(TAG, "set_advertising_name failed");
     _server->deinit();
+    _server = nullptr;
     return false;
   }
 
   if (!_server->add_advertised_service_uuid(SERVICE_UUID)) {
     AG_LOGE(TAG, "add_advertised_service_uuid failed");
     _server->deinit();
+    _server = nullptr;
     return false;
   }
 
   if (!_server->start_advertising()) {
     AG_LOGE(TAG, "start_advertising failed");
     _server->deinit();
+    _server = nullptr;
     return false;
   }
 
-  _initialized = true;
   AG_LOGI(TAG, "initialized, advertising as '%s'", adv_name);
   return true;
 }
@@ -268,7 +280,7 @@ bool BleService::init(const char *serial) {
 #endif // TEST_HOST
 
 void BleService::deinit() {
-  if (!_initialized) {
+  if (_server == nullptr) {
     return;
   }
 
@@ -276,12 +288,8 @@ void BleService::deinit() {
   _export_active = false;
   _export_session_id = 0;
 
-  // _server stays bound — it is borrowed from the board for the service
-  // lifetime.  Clearing characteristic pointers prevents stale pointer
-  // dereferences if the next owner (e.g. provisioning) rebuilds the GATT
-  // table differently.
   _server->deinit();
-  _initialized = false;
+  _server = nullptr;
   _measures_char = nullptr;
   _status_char = nullptr;
   _config_char = nullptr;
@@ -291,7 +299,10 @@ void BleService::deinit() {
 }
 
 bool BleService::delete_all_bonds() {
-  // Borrowed server is always bound after ctor; proxy directly.
+  if (_server == nullptr) {
+    return true;
+  }
+
   const bool ok = _server->delete_all_bonds();
   if (!ok) {
     AG_LOGW(TAG, "delete_all_bonds failed");
@@ -304,7 +315,7 @@ bool BleService::delete_all_bonds() {
 // State queries
 // ---------------------------------------------------------------------------
 
-bool BleService::is_initialized() const { return _initialized; }
+bool BleService::is_initialized() const { return _server != nullptr; }
 
 bool BleService::is_connected() const { return _connected.load(); }
 
@@ -316,9 +327,10 @@ void BleService::on_connect(uint16_t conn_handle) {
   AG_LOGI(TAG, "client connected: handle=%u", conn_handle);
   _connected.store(true);
 
-  // Stop advertising — single connection device.  The borrowed server is
-  // always bound; the NimBLE callback would not have fired otherwise.
-  _server->stop_advertising();
+  // Stop advertising — single connection device
+  if (_server != nullptr) {
+    _server->stop_advertising();
+  }
 
   Event evt{};
   evt.type = EventType::BleConnected;
@@ -333,8 +345,10 @@ void BleService::on_disconnect(uint16_t conn_handle, int reason) {
   _export_active = false;
   _export_session_id = 0;
 
-  // Restart advertising — borrowed server is always bound.
-  _server->start_advertising();
+  // Restart advertising
+  if (_server != nullptr) {
+    _server->start_advertising();
+  }
 
   Event evt{};
   evt.type = EventType::BleDisconnected;

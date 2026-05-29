@@ -97,12 +97,8 @@ public:
   // --- Construction ---
 
   /// event_queue: shared orchestrator event queue (for posting BLE events)
-  /// storage:     storage service reference (for history export reads)
-  /// ble_server:  borrowed BLE server shared with Stationary provisioning.
-  ///              The orchestrator enforces mutual exclusion: only one
-  ///              owner (BleService or ProvisioningManager) drives the
-  ///              server at a time across mode transitions.
-  BleService(RtosQueueHandle event_queue, StorageService &storage, AgBleServer &ble_server);
+  /// storage: storage service reference (for history export reads)
+  explicit BleService(RtosQueueHandle event_queue, StorageService &storage);
 
   // --- Lifecycle (called by orchestrator) ---
 
@@ -221,13 +217,7 @@ private:
   RtosQueueHandle _event_queue;
   StorageService &_storage;
 
-  // Borrowed: lifetime managed by the board.  Always non-null after ctor.
-  // Tests may overwrite this pointer through BleServiceTestAccess.
   AgBleServer *_server = nullptr;
-  // True between a successful init() and deinit().  Replaces the previous
-  // `_server != nullptr` initialisation gate, which is no longer valid now
-  // that the BLE server is borrowed for the lifetime of the service.
-  bool _initialized = false;
   AgBleCharacteristic *_measures_char = nullptr;
   AgBleCharacteristic *_status_char = nullptr;
   AgBleCharacteristic *_config_char = nullptr;

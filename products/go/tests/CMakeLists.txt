@@ -109,7 +109,6 @@ target_include_directories(go_input_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-touch/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-gpio/hal"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
 )
 
@@ -178,7 +177,6 @@ target_include_directories(go_power_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-gpio/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-config/hal"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
 )
 
@@ -204,25 +202,13 @@ catch_discover_tests(go_power_tests)
 
 add_library(go_ui_test_support
     "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_ui.cpp"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/common.cpp"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/rtos.cpp"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning/internal/provisioning_qr.cpp"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning/vendor/qrcodegen.c"
 )
 
 target_include_directories(go_ui_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-config/hal"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-gpio/hal"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
-)
-
-target_include_directories(go_ui_test_support PRIVATE
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning/vendor"
 )
 
 target_compile_definitions(go_ui_test_support PUBLIC
@@ -254,8 +240,6 @@ add_library(go_orchestrator_test_support
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/rtos.cpp"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-payload-cache/services/payload_cache.cpp"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-serial/airgradient_serial.cpp"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning/internal/provisioning_qr.cpp"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning/vendor/qrcodegen.c"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main/gps/gps_driver.cpp"
     go_orchestrator_stubs.cpp
 )
@@ -263,7 +247,6 @@ add_library(go_orchestrator_test_support
 target_include_directories(go_orchestrator_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-client"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-config/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-serial/include"
     "${LIBNMEA_DIR}/src/nmea"
@@ -277,13 +260,7 @@ target_include_directories(go_orchestrator_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-touch/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-gpio/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
     "${AIRGRADIENT_REPO_ROOT}/components/sensirion-gas-index-algorithm"
-)
-
-target_include_directories(go_orchestrator_test_support PRIVATE
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning/vendor"
 )
 
 target_compile_definitions(go_orchestrator_test_support PUBLIC
@@ -322,7 +299,6 @@ target_include_directories(go_ble_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-config/hal"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-bms"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-bms/types"
@@ -363,7 +339,6 @@ target_include_directories(go_ble_insecure_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-config/hal"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-bms"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-bms/types"
@@ -436,7 +411,6 @@ target_include_directories(go_settings_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-config/hal"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
 )
 
 target_compile_definitions(go_settings_test_support PUBLIC TEST_HOST)
@@ -543,7 +517,6 @@ add_library(go_app_test_support
 target_include_directories(go_app_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-client"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-config/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-bms"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-bms/types"
@@ -554,9 +527,7 @@ target_include_directories(go_app_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-touch/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-gpio/hal"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-serial/include"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
     "${AIRGRADIENT_REPO_ROOT}/components/sensirion-gas-index-algorithm"
     "${LIBNMEA_DIR}/src/nmea"
     "${LIBNMEA_DIR}/src/parsers"
@@ -597,7 +568,6 @@ target_include_directories(go_sensor_producer_test_support PUBLIC
     "${AIRGRADIENT_REPO_ROOT}/products/go/main"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-sensors"
     "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
     "${AIRGRADIENT_REPO_ROOT}/components/sensirion-gas-index-algorithm"
 )
 
@@ -614,69 +584,3 @@ target_link_libraries(go_sensor_producer_tests PRIVATE
 )
 
 catch_discover_tests(go_sensor_producer_tests)
-
-# ---------------------------------------------------------------------------
-# go_cloud tests
-#
-# CloudService is exercised against a hand-rolled non-virtual AgClient stub
-# (go_cloud_ag_client_stub.cpp); the orchestrator stubs use a separate copy
-# of the same stub.  WifiService is stubbed to a minimal in-file fake whose
-# rssi() can be driven by the test.  The real go_cloud.cpp is the code
-# under test.
-# ---------------------------------------------------------------------------
-
-add_library(go_cloud_test_support
-    "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_cloud.cpp"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/rtos.cpp"
-    go_cloud_stubs.cpp
-)
-
-target_include_directories(go_cloud_test_support PUBLIC
-    "${AIRGRADIENT_REPO_ROOT}/products/go/main"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-common/include"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-gpio/hal"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-client"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-ble/hal"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-provisioning"
-    "${AIRGRADIENT_REPO_ROOT}/components/airgradient-wifi"
-)
-
-target_compile_definitions(go_cloud_test_support PUBLIC TEST_HOST)
-
-add_executable(go_cloud_tests
-    go_cloud.tests.cpp
-)
-
-target_link_libraries(go_cloud_tests PRIVATE
-    go_cloud_test_support
-    Catch2::Catch2WithMain
-    trompeloeil::trompeloeil
-)
-
-catch_discover_tests(go_cloud_tests)
-
-# ---------------------------------------------------------------------------
-# go_text_wrap tests
-# ---------------------------------------------------------------------------
-
-add_library(go_text_wrap_test_support
-    "${AIRGRADIENT_REPO_ROOT}/products/go/main/go_text_wrap.cpp"
-)
-
-target_include_directories(go_text_wrap_test_support PUBLIC
-    "${AIRGRADIENT_REPO_ROOT}/products/go/main"
-)
-
-target_compile_definitions(go_text_wrap_test_support PUBLIC TEST_HOST)
-
-add_executable(go_text_wrap_tests
-    go_text_wrap.tests.cpp
-)
-
-target_link_libraries(go_text_wrap_tests PRIVATE
-    go_text_wrap_test_support
-    Catch2::Catch2WithMain
-)
-
-catch_discover_tests(go_text_wrap_tests)

@@ -13,7 +13,6 @@
 #include "go_app.h"
 
 #include "ag_log.h"
-#include "common.h"
 #ifndef TEST_HOST
 #include "board_config.h"
 #include <esp_system.h>
@@ -44,39 +43,10 @@ inline esp_reset_reason_t esp_reset_reason() { return ESP_RST_UNKNOWN; }
 #include "gps/gps_service.h"
 #include "rtos.h"
 #include "services/sensor_manager.h"
-#include "go_wifi.h"
 
 #include <ctime>
 
 static constexpr const char *TAG = "app";
-
-// AGo model code used in BLE manufacturer data and DIS Model Number.
-// Open question in the spec — confirm against the phone app.
-static constexpr const char *STATIONARY_AGO_MODEL_CODE = "P-1PSG";
-
-// Strings owned by GoApp that WifiService::Config holds pointers into.
-// Stack-allocated in run_*; lifetime = process (functions never return).
-namespace {
-struct StationaryStrings {
-  std::string ap_ssid;               // "airgradient-<12-hex>"
-  std::string ble_manufacturer_data; // "P-1PSG#<12-hex>"
-};
-
-StationaryStrings make_stationary_strings(const std::string &serial) {
-  return {"airgradient-" + serial, std::string(STATIONARY_AGO_MODEL_CODE) + "#" + serial};
-}
-
-WifiService::Config make_wifi_service_config(const StationaryStrings &s, const char *serial,
-                                             const char *firmware_version) {
-  WifiService::Config cfg{};
-  cfg.ap_ssid = s.ap_ssid.c_str();
-  cfg.ble_serial_number = serial;
-  cfg.ble_firmware_version = firmware_version;
-  cfg.ble_model_name = STATIONARY_AGO_MODEL_CODE;
-  cfg.ble_manufacturer_data = s.ble_manufacturer_data.c_str();
-  return cfg;
-}
-} // namespace
 
 // ===========================================================================
 // Construction
@@ -90,7 +60,6 @@ GoApp::GoApp(GoBoard &board) : _board(board) {}
 
 void GoApp::run() {
   RTOS::delay_ms(100);
-  log_heap(TAG, "boot:run-entry");
   WakeCause cause = PowerService::get_wake_cause();
   RtcAppState state = load_rtc_app_state();
 
@@ -124,7 +93,6 @@ void GoApp::run() {
 
 void GoApp::run_fast_path(const RtcAppState &state) {
   AG_LOGI(TAG, "run_fast_path: entering fast-path boot (sensors_warm=%d)", state.sensors_warm);
-  log_heap(TAG, "boot:fast-path:enter");
 
   // ISR for button detection during blocking operations.
   volatile bool button_pressed = false;
@@ -149,7 +117,6 @@ void GoApp::run_fast_path(const RtcAppState &state) {
     _board.display().stop();
     _board.display().deep_sleep();
     _board.ulp_start();
-    log_heap(TAG, "boot:fast-path:before-sleep");
     _board.power().enter_sleep(result.sleep_duration_ms);
     // Never returns — CPU reboots on wake.
   }
@@ -177,7 +144,6 @@ GoApp::FastPathResult GoApp::execute_fast_path(const RtcAppState &state,
   // --- Core init (NVS must be ready before load_settings) ---
   _board.init_core();
   _board.release_gpio_holds();
-  _board.power().set_pm_power(true);
 
   GoSettings settings = _board.load_settings();
 
@@ -374,9 +340,9 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
   // Non-SPI peripherals — runs while the display refreshes in background.
   // -----------------------------------------------------------------------
 
-  _board.init_core();
-  _board.release_gpio_holds();
-  _board.power().set_pm_power(true);
+  _board.init_nvs();
+  _board.init_buses();
+  _board.init_bms();
 
   GoSettings settings = _board.load_settings();
 
@@ -437,7 +403,6 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
     gps_service->idle_gnss();
   }
   input_service->start();
-  log_heap(TAG, "boot:button-wake:phase2-end");
 
   // -----------------------------------------------------------------------
   // Phase 3: Storage init (blocks on SPI until display refresh finishes)
@@ -445,22 +410,8 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
 
   StorageService &stor = _board.storage();
 
-  // BleService construction requires StorageService and borrows the
-  // shared BLE server from the board (Portable mode owns it for now;
-  // Stationary provisioning will borrow it under mutual exclusion).
-  auto *ble_service = new BleService(event_queue, stor, _board.ble_server());
-
-  // WifiService owns the Stationary networking lifecycle. Borrows
-  // wifi/ble/http from the board; no driver init until enter_stationary().
-  auto *stationary_strings = new StationaryStrings(make_stationary_strings(serial));
-  auto *wifi_service = new WifiService(
-      event_queue, {_board.wifi_manager(), _board.ble_server(), _board.http_server()},
-      make_wifi_service_config(*stationary_strings, serial.c_str(), _board.firmware_version()));
-
-  // Inert until start(); heap claimed only when Stationary + online.
-  auto *cloud_service =
-      new CloudService(event_queue, {_board.ag_client(), *wifi_service}, CloudService::Config{});
-  log_heap(TAG, "boot:button-wake:phase3-end");
+  // BleService construction requires StorageService
+  auto *ble_service = new BleService(event_queue, stor);
 
   auto *buzzer = new BuzzerService({
       .pin = PIN_BUZZER,
@@ -512,8 +463,6 @@ void GoApp::run_button_wake_path(const RtcAppState &state) {
 void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
   // --- Complete any missing core init (idempotent) ---
   _board.init_core();
-  _board.release_gpio_holds();
-  _board.power().set_pm_power(true);
 
   GoSettings settings = _board.load_settings();
 
@@ -532,22 +481,7 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
   RtosQueueHandle event_queue = RTOS::queue_create(EVENT_QUEUE_DEPTH, sizeof(Event));
 
   // --- BLE ---
-  // Borrow the shared AgBleServer from the board so Stationary
-  // provisioning can later reuse the same instance under orchestrator-
-  // enforced mutual exclusion.
-  auto *ble_service = new BleService(event_queue, stor, _board.ble_server());
-
-  // --- WifiService ---
-  std::string boot_serial = _board.serial_number();
-  auto *stationary_strings = new StationaryStrings(make_stationary_strings(boot_serial));
-  auto *wifi_service = new WifiService(
-      event_queue, {_board.wifi_manager(), _board.ble_server(), _board.http_server()},
-      make_wifi_service_config(*stationary_strings, boot_serial.c_str(),
-                               _board.firmware_version()));
-
-  // --- CloudService (inert until start()) ---
-  auto *cloud_service =
-      new CloudService(event_queue, {_board.ag_client(), *wifi_service}, CloudService::Config{});
+  auto *ble_service = new BleService(event_queue, stor);
 
   // --- Service construction ---
   auto *sensor_producer =
@@ -582,12 +516,8 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
       DisplayValues wake = build_wake_values(*handoff.display_snapshot, true);
       disp.init(wake);
     } else {
-      // Cold-boot: show "Booting..." instead of Home sentinels.
-      // Seed UIManager so subsequent update_display() keeps the splash
-      // until the Orchestrator transitions to Home on first measurement.
-      DisplayValues splash = build_boot_splash_values();
-      ui_manager->show_info(BOOT_SPLASH_TEXT);
-      disp.init(splash);
+      DisplayValues initial{};
+      disp.init(initial);
     }
     handoff.display_painted = true;
   }
@@ -662,7 +592,6 @@ void GoApp::run_interactive(WakeCause cause, BootHandoff handoff) {
   auto *orchestrator =
       new Orchestrator(event_queue, services, settings, _board.config_store(), serial.c_str());
   orchestrator->init(cause, handoff);
-  log_heap(TAG, "boot:interactive:before-run");
   orchestrator->run(); // Never returns.
 }
 
@@ -743,15 +672,6 @@ DisplayValues build_fast_path_display(const MeasuresAGo &measures, const GpsData
   v.pm_use_usaqi = settings.pm_use_usaqi;
   v.display_off = false;
 
-  return v;
-}
-
-DisplayValues build_boot_splash_values() {
-  DisplayValues v{};
-  v.screen = Screen::Info;
-  v.info_text = BOOT_SPLASH_TEXT;
-  v.locked = true; // Info hides the status bar; kept for semantic correctness.
-  v.display_off = false;
   return v;
 }
 

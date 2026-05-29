@@ -2,82 +2,20 @@
 
 #include "airgradient_gpio.h"
 #include "go_types.h"
-#include "types/bms_types.h"
 
 #include <cstdint>
 #include <string>
 
-// ---------------------------------------------------------------------------
-// Board variant — runtime detection (no #ifdef per board)
-//
-// NOTE: do NOT #include "board_config.h" here.  That header pulls in
-// ESP-IDF driver headers unconditionally, which would break host
-// builds that include go_board.h (most of products/go/tests/).
-// ---------------------------------------------------------------------------
-
-enum class BoardVariant : uint8_t {
-  Prototype, ///< Legacy board: no BQ27427, PM enable active-high
-  V1,        ///< New board: BQ27427 at 0x55, PM enable active-low
-};
-
-inline const char *board_variant_str(BoardVariant v) {
-  return v == BoardVariant::V1 ? "V1" : "Prototype";
-}
-
-/// GPIO level interpreted as "PM ON" for the given variant.
-/// Prototype is active-high (level 1); v1 is active-low (level 0).
-/// Literals duplicated from board_config.h on purpose — board_config.h
-/// is target-only and cannot be included here.
-inline constexpr uint8_t pm_power_on_level(BoardVariant v) {
-  return (v == BoardVariant::V1) ? 0 : 1;
-}
-
-// ---------------------------------------------------------------------------
-// Fuel-gauge bring-up decision helper (header-only, host-test-safe)
-// ---------------------------------------------------------------------------
-
-struct FgRecoveryDecision {
-  bool needs_factory_reset; ///< True when DC or FCC is out of range
-  bool needs_config_write;  ///< True when current FgCellConfig differs from target
-};
-
-/// Decide whether the BQ27427 needs a factory reset and / or a fresh
-/// cell-config write based on what it currently has in persistent memory.
-///
-/// Each input value is paired with a _ok validity flag so the helper can
-/// distinguish "I read this and it's bad" from "I could not read this at
-/// all".  Transient I2C errors must NOT trigger a destructive reset /
-/// config-write — only confidently-observed corruption does.
-inline FgRecoveryDecision evaluate_fg_state(uint16_t current_design_capacity_mah, bool dc_ok,
-                                            uint16_t current_full_charge_capacity_mah, bool fcc_ok,
-                                            const FgCellConfig &current_cell_config, bool cfg_ok,
-                                            const FgCellConfig &target_cell_config,
-                                            uint16_t dc_sanity_min_mah, uint16_t dc_sanity_max_mah,
-                                            uint16_t fcc_sanity_max_mah) {
-  FgRecoveryDecision out{false, false};
-  const bool dc_corrupt = dc_ok && (current_design_capacity_mah < dc_sanity_min_mah ||
-                                    current_design_capacity_mah > dc_sanity_max_mah);
-  const bool fcc_corrupt = fcc_ok && (current_full_charge_capacity_mah > fcc_sanity_max_mah);
-  out.needs_factory_reset = dc_corrupt || fcc_corrupt;
-  out.needs_config_write = cfg_ok && (current_cell_config != target_cell_config);
-  return out;
-}
-
 // Forward declarations — avoid pulling full headers into the interface.
-class AgBleServer;
-class AgClient;
 class BmsDevice;
 class CapTouchSensor;
 class LP5036;
 class ConfigStore;
 class DisplayService;
 class GpsDriver;
-class HttpServer;
 class PowerService;
 class SensorManager;
 class StorageService;
-class WifiHal;
-class WifiManager;
 struct GoSettings;
 
 /// Abstract factory / BSP interface for the AGo board.
@@ -104,12 +42,6 @@ struct GoBoard {
   virtual void init_spi() = 0;   ///< SPI bus
   virtual void init_bms() = 0;   ///< BMS driver (requires buses)
 
-  /// Initialise the Wi-Fi subsystem (NVS, netif, event loop, esp_wifi_init,
-  /// event handlers, single-shot timers).  Idempotent.  **Not** called by
-  /// init_core() — mode-conditional callers (Stationary entry) invoke it
-  /// explicitly so Portable-only boots never pay the cost.
-  virtual void init_wifi_subsystem() = 0;
-
   // -----------------------------------------------------------------
   // Convenience gate — calls all init methods above (skips what's done)
   // -----------------------------------------------------------------
@@ -133,24 +65,6 @@ struct GoBoard {
   virtual PowerService &power() = 0;
 
   // -----------------------------------------------------------------
-  // Lazy radio accessors
-  //
-  // These return references to shared radio infrastructure used by the
-  // Stationary networking stack and provisioning.  Construction is lazy
-  // and side-effect-free; the actual ESP-IDF Wi-Fi init is gated by
-  // init_wifi_subsystem().  Portable mode borrows only ble_server().
-  // -----------------------------------------------------------------
-
-  virtual WifiHal &wifi_hal() = 0;
-  virtual WifiManager &wifi_manager() = 0;
-  virtual HttpServer &http_server() = 0;
-  virtual AgBleServer &ble_server() = 0;
-
-  /// Lazy AgClient accessor.  First call runs begin(serial, Wifi);
-  /// sub-millisecond, no sockets.  Safe on every boot path.
-  virtual AgClient &ag_client() = 0;
-
-  // -----------------------------------------------------------------
   // Per-call factories (caller owns the returned object)
   // -----------------------------------------------------------------
 
@@ -161,10 +75,6 @@ struct GoBoard {
   // -----------------------------------------------------------------
   // Platform info
   // -----------------------------------------------------------------
-
-  /// Return the board variant detected during init_buses().
-  /// Must not be called before init_buses() has completed.
-  virtual BoardVariant variant() const = 0;
 
   virtual std::string serial_number() = 0;
   virtual const char *firmware_version() = 0;

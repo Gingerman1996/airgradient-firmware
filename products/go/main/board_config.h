@@ -73,7 +73,6 @@ inline constexpr int GPS_BAUD = 115200;
 inline constexpr uint8_t I2C_ADDR_S12 = 0x68;     // SenseAir S12 CO2
 inline constexpr uint8_t I2C_ADDR_SCD4X = 0x62;   // Sensirion SCD4x CO2 + T/RH
 inline constexpr uint8_t I2C_ADDR_STCC4 = 0x64;   // Sensirion STCC4 CO2 + T/RH
-inline constexpr uint8_t I2C_ADDR_SHT40 = 0x44;   // Dedicated temp/humidity (V1)
 inline constexpr uint8_t I2C_ADDR_SGP41 = 0x59;   // TVOC & NOx
 inline constexpr uint8_t I2C_ADDR_SHT40 = 0x44;   // Temperature + humidity
 inline constexpr uint8_t I2C_ADDR_DPS368 = 0x77;  // Pressure + altitude
@@ -88,10 +87,6 @@ inline constexpr gpio_num_t PIN_ACCEL_INT = GPIO_NUM_3; // LIS2DH12 INT1 (net AC
 
 // ---------------------------------------------------------------------------
 // PM sensor power enable (SPS30, I2C)
-//
-// Prototype boards use active-high (level 1 = PM on).
-// v1 boards use active-low   (level 0 = PM on).
-// The runtime variant detection in init_buses() selects the correct level.
 // ---------------------------------------------------------------------------
 
 inline constexpr gpio_num_t PIN_PM_POWER = GPIO_NUM_26; // v0.3: active-low
