@@ -15,10 +15,38 @@ __pycache__/
 .export
 products/go/gps_workflow_explainer/
 
-# Conversation handoff documents — local-only, never committed.
+# ---------------------------------------------------------------------------
+# Local-only scratch / handoff material — never committed.
+#
+# Convention: Claude scratch notes, design drafts, bench captures, mockups,
+# and handoff docs live at the repo ROOT. Real docs and assets live under
+# subdirectories (components/, docs/, products/**/docs|specs|assets|web) and
+# stay tracked, so the root-scoped rules below never touch them.
+# ---------------------------------------------------------------------------
+
+# Conversation / engineering handoff documents (any case, root or nested).
 HANDOFF.md
 HANDOFF_*.md
+[Hh]andoff*.md
 
-# Battery-learning bench captures — local-only serial logs and scratch plots.
-battery-learning-step-*.log
-electric_*.html
+# Serial logs and bench captures, anywhere in the tree.
+*.log
+
+# Merged / flashable firmware images dropped outside build/.
+*-merged.bin
+
+# Root-level scratch HTML — mockups, plots, screen sims.
+# (Keeps real assets like components/.../portal.html and
+#  products/reference/main/web/index.html, which live in subdirectories.)
+/*.html
+
+# Root-level scratch Markdown — everything at the root EXCEPT the project's
+# own top-level docs. Drop any throwaway .md note at the repo root and it is
+# ignored automatically; nested docs/ and specs/ are unaffected.
+/*.md
+!/README.md
+!/AGENTS.md
+!/CLAUDE.md
+
+# Internal review / handoff write-ups kept for local reference only.
+docs/internal/
